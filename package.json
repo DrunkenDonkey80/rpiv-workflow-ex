@@ -1,5 +1,5 @@
 {
-	"name": "@flex/rpiv-wfex",
+	"name": "rpiv-workflow-ex",
 	"version": "0.1.0",
 	"description": "Autonomy + resilience sidecar for @juicesharp/rpiv-workflow. Auto-answers mechanical workflow gates, auto-resumes runs orphaned by session disposal, and adds /wfex resume + /wfex runs. Touches neither rpiv-workflow nor rpiv-pi.",
 	"keywords": ["pi-package", "pi-extension", "rpiv", "workflow", "autonomy", "resilience", "resume", "sidecar"],

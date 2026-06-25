@@ -27,8 +27,13 @@ runtime; this package only adds `/wfex …` commands and three hooks.
 
 ## Install
 
-This package ships raw `.ts` — Pi loads it via jiti, no build step. Add it to your Pi packages
-alongside `@juicesharp/rpiv-workflow` (a peer). It self-registers on load.
+```bash
+pi install npm:rpiv-workflow-ex
+```
+
+This package ships raw `.ts` — Pi loads it via jiti, no build step. It self-registers on load.
+Install it the same way as `@juicesharp/rpiv-workflow` (a peer) so both land in the same Pi npm
+root and the runtime import resolves. Verify with `/wfex runs` after `/reload`.
 
 ## Model selection (config-only, not shipped here)
 
