@@ -1,0 +1,21 @@
+{
+	"name": "@flex/rpiv-wfex",
+	"version": "0.1.0",
+	"description": "Autonomy + resilience sidecar for @juicesharp/rpiv-workflow. Auto-answers mechanical workflow gates, auto-resumes runs orphaned by session disposal, and adds /wfex resume + /wfex runs. Touches neither rpiv-workflow nor rpiv-pi.",
+	"keywords": ["pi-package", "pi-extension", "rpiv", "workflow", "autonomy", "resilience", "resume", "sidecar"],
+	"license": "MIT",
+	"author": "Flex",
+	"type": "module",
+	"files": ["extension.ts", "state.ts", "autonomy.ts", "commands.ts", "watchdog.ts", "README.md"],
+	"pi": {
+		"extensions": ["./extension.ts"]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@juicesharp/rpiv-workflow": "*"
+	},
+	"rpiv": {
+		"upstreamBase": "1.20.0",
+		"upstreamCommit": "faa0f9dcbe75d22e24e4a27b79ab1bfb15f38f85"
+	}
+}

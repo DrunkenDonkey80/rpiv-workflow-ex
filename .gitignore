@@ -1,0 +1,2 @@
+# rpiv-workflow runtime run trail (per-run JSONL state, not source)
+.rpiv/workflows/runs/
