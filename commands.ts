@@ -6,13 +6,16 @@
  * (isModuleNotFound) so startup stays light and a missing sibling degrades
  * gracefully.
  *
- *   /wfex resume        → auto-pick the newest resumable run, then resume.
- *   /wfex resume @<ref> → resume a specific run by name or run-id.
- *   /wfex runs          → list runs with last-stage status.
+ *   /wfex resume          → auto-pick the newest resumable run, then resume.
+ *   /wfex resume @<ref>   → resume a specific run by name or run-id.
+ *   /wfex continue [@ref] → mark an interrupted-but-done stage complete and
+ *                           advance to the NEXT stage (see continue.ts).
+ *   /wfex runs            → list runs with last-stage status.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunSummary, WorkflowHostContext, WorkflowStage } from "@juicesharp/rpiv-workflow";
+import { continueCmd } from "./continue.js";
 import { clearResuming } from "./state.js";
 
 type WfRuntime = typeof import("@juicesharp/rpiv-workflow");
@@ -124,19 +127,47 @@ async function listRunsCmd(ctx: WorkflowHostContext): Promise<void> {
 	ctx.ui.notify(`rpiv-wfex runs (${runs.length}):\n${lines.join("\n")}`, "info");
 }
 
+/**
+ * `/wfex continue [@ref]` — advance PAST an interrupted-but-done stage instead
+ * of cold-re-running it. Loads the runtime + resolves the run (newest resumable
+ * when no ref), then delegates to the interactive `continueCmd`.
+ */
+async function continueDispatch(pi: ExtensionAPI, ctx: WorkflowHostContext, ref: string): Promise<void> {
+	const rt = await loadRuntime();
+	if (!rt) {
+		ctx.ui.notify("rpiv-wfex: @juicesharp/rpiv-workflow is not installed.", "error");
+		return;
+	}
+	let runId = ref;
+	if (!runId) {
+		const pick = pickNewestResumable(rt, ctx.cwd);
+		if (!pick) {
+			ctx.ui.notify("rpiv-wfex: no workflow runs found to continue.", "warning");
+			return;
+		}
+		runId = pick.runId;
+	}
+	try {
+		await continueCmd(pi, ctx, rt, runId);
+	} catch (e) {
+		ctx.ui.notify(`rpiv-wfex: continue threw — ${errMsg(e)}`, "error");
+	}
+}
+
 export function registerWfexCommands(pi: ExtensionAPI): void {
 	pi.registerCommand("wfex", {
-		description: "rpiv-wfex: resume | runs — autonomous workflow resume + run lister",
+		description: "rpiv-wfex: resume | continue | runs — autonomous workflow resume, skip-done-stage, + run lister",
 		handler: async (args, ctx) => {
 			const tokens = args.trim().split(/\s+/).filter(Boolean);
 			const sub = tokens[0] ?? "";
 			if (sub === "runs") return listRunsCmd(ctx);
+			if (sub === "continue") return continueDispatch(pi, ctx, (tokens[1] ?? "").replace(/^@/, "").trim());
 			// "/wfex resume @ref", "/wfex resume", "/wfex @ref", "/wfex" all resume.
 			const refToken = sub.startsWith("@") ? sub : (tokens[1] ?? "");
 			if (sub === "resume" || sub === "" || sub.startsWith("@")) {
 				return resumeCmd(pi, ctx, refToken.replace(/^@/, "").trim());
 			}
-			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex runs", "warning");
+			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex runs", "warning");
 		},
 	});
 }

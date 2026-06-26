@@ -6,7 +6,7 @@
 	"license": "MIT",
 	"author": "Flex",
 	"type": "module",
-	"files": ["extension.ts", "state.ts", "autonomy.ts", "commands.ts", "watchdog.ts", "README.md"],
+	"files": ["extension.ts", "state.ts", "autonomy.ts", "commands.ts", "continue.ts", "watchdog.ts", "README.md"],
 	"pi": {
 		"extensions": ["./extension.ts"]
 	},

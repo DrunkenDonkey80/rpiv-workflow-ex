@@ -23,7 +23,21 @@ runtime; this package only adds `/wfex …` commands and three hooks.
 |---|---|
 | `/wfex resume` | Resume the newest resumable run (auto-picked). |
 | `/wfex resume @<ref>` | Resume a specific run by name or run-id. |
+| `/wfex continue [@<ref>]` | Advance PAST a stage that was interrupted but actually finished — instead of cold-re-running it. |
 | `/wfex runs` | List runs with last-stage status; resumable ones flagged. |
+
+### resume vs. continue
+
+`/wf @id` (and `/wfex resume`) key on the trail's last row: a `completed` row routes
+onward, but a `failed`/`aborted` row makes the engine **re-enter that stage** — so if `/wf`
+died mid-stage after the skill already wrote its artifact, resume re-runs the whole stage
+("10 minutes redoing todos that were already done").
+
+`/wfex continue` fixes exactly that: it finds the artifact the interrupted stage produced,
+asks you to confirm it, appends a synthetic `completed` row crediting that artifact, then
+resumes — which now advances to the **next** stage. It refuses mid-loop trailers and any run
+with no artifact to credit (use `/wfex resume` there). The watchdog deliberately stays on
+plain `resume`: auto-advancing past a failure without a human check is unsafe.
 
 ## Install
 
