@@ -1,5 +1,7 @@
 # rpiv-wfex
 
+Current release: **v0.1.0**. See [CHANGELOG.md](CHANGELOG.md).
+
 `rpiv-wfex` is a small Pi extension that helps `@juicesharp/rpiv-workflow` runs finish instead of stalling on routine prompts, frozen sessions, or usage-limit resets.
 
 It does **not** fork or patch rpiv-workflow. It adds `/wfex …` commands and lifecycle hooks beside the normal `/wf` runtime, so upstream updates stay easy to compare and adopt.

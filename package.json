@@ -10,7 +10,7 @@
 		"url": "git+ssh://git@github.com/DrunkenDonkey80/rpiv-workflow-ex.git"
 	},
 	"type": "module",
-	"files": ["extension.ts", "state.ts", "autonomy.ts", "commands.ts", "continue.ts", "watchdog.ts", "ratelimit.ts", "README.md"],
+	"files": ["extension.ts", "state.ts", "autonomy.ts", "commands.ts", "continue.ts", "watchdog.ts", "ratelimit.ts", "README.md", "CHANGELOG.md"],
 	"pi": {
 		"extensions": ["./extension.ts"]
 	},
