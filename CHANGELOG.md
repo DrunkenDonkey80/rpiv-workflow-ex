@@ -9,6 +9,10 @@ All notable changes to `rpiv-workflow-ex` are documented here.
 - Auto-answered workflow questions are now instructed to append reviewable bullets to `docs/rpiv-wfex-decisions/<runId>_decisions.md`.
 - `/wfex decisions [@<runId>|all]` lists recorded auto decisions and timestamps; without args it uses the active workflow or latest log.
 
+### Fixed
+
+- `safe`/`unattended` auto mode no longer stalls on skill-body developer checkpoints (e.g. blueprint/design slice gates like "Slice N/M: … Approve? / Revise / Rethink / Revisit a decision"). The autonomy directives now carry an explicit `SKILL-CHECKPOINT OVERRIDE` clause that wins the prompt-priority contest over a skill body instructing "ask the developer" — such checkpoints are auto-answered Recommended without rendering the question, since they are routine gates, not safety stops.
+
 ## [0.2.0] - 2026-06-29
 
 ### Changed

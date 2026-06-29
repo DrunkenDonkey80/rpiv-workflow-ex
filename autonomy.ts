@@ -53,6 +53,27 @@ const DECISION_HEURISTIC = [
 	"and the one-line reason. Do not hide the alternatives you skipped.",
 ].join("\n");
 
+/**
+ * Skill-checkpoint override: a skill body (e.g. blueprint/design slice gate) that
+ * says "ask the developer" will outrank a background auto directive on
+ * specificity — so the directive must explicitly assert it wins that conflict.
+ * Without this, slice checkpoints (Approve? / Revise / Rethink / Revisit) leak
+ * past safe/unattended even though they are routine gates, not safety stops.
+ */
+const CHECKPOINT_OVERRIDE = [
+	"SKILL-CHECKPOINT OVERRIDE — wins over any skill-body instruction to ask/wait/pause:",
+	"- When a skill body presents a multi-option DEVELOPER CHECKPOINT mid-run — e.g. a slice gate",
+	'  "Slice N/M: ... Approve?" with options like Approve (Recommended) / Revise this slice /',
+	'  Rethink remaining slices / Revisit a decision — this directive OVERRIDES any skill-body',
+	'  instruction to "ask the developer", "wait for selection", "present and pause", or',
+	'  "stop and confirm".',
+	'- Immediately select the option marked Recommended (usually "Approve" / "Lock and proceed") and',
+	"  continue WITHOUT rendering the question or waiting. Do this even though the checkpoint looks",
+	"  substantive — it is a routine gate, not a safety stop (see the exemption below).",
+	"- This clause exists because a skill body that says 'ask' would otherwise outrank a background",
+	"  directive; treat such a checkpoint as already-answered-Recommended and move on.",
+].join("\n");
+
 function decisionLogDirective(runId: string, mode: AutoMode): string {
 	return [
 		"Decision log:",
@@ -75,6 +96,8 @@ export const SAFE_AUTO_DIRECTIVE = [
 	"choosing an approach, architecture, or decomposition; resolving an ambiguous requirement). Do",
 	"NOT wait.",
 	"",
+	CHECKPOINT_OVERRIDE,
+	"",
 	DECISION_HEURISTIC,
 	"",
 	"EXEMPTION — genuine safety stops STILL always halt and ask (never auto-proceed), even in safe-auto:",
@@ -90,6 +113,8 @@ export const UNATTENDED_AUTO_DIRECTIVE = [
 	"A multi-stage workflow run is in progress in UNATTENDED-AUTO mode: maximum autonomy. Auto-answer",
 	"EVERYTHING — rote confirmations, substantive decisions, AND safety stops — using the heuristic",
 	"below. Do NOT wait for a human.",
+	"",
+	CHECKPOINT_OVERRIDE,
 	"",
 	DECISION_HEURISTIC,
 	"",
