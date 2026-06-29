@@ -13,7 +13,8 @@
  *   /wfex runs            → list runs with last-stage status.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunSummary, WorkflowHostContext, WorkflowStage } from "@juicesharp/rpiv-workflow";
 import { buildCompletedRow, continueCmd, findNewestArtifactMd, parseFrontmatter, shouldOfferContinue } from "./continue.js";
@@ -139,6 +140,21 @@ async function resumeCmd(pi: ExtensionAPI, ctx: WorkflowHostContext, ref: string
 	}
 }
 
+function listDecisionsCmd(ctx: WorkflowHostContext, ref: string): void {
+	const dir = join(ctx.cwd, "docs", "rpiv-wfex-decisions");
+	if (!existsSync(dir)) {
+		ctx.ui.notify("rpiv-wfex: no auto-decision logs found.", "info");
+		return;
+	}
+	const files = readdirSync(dir).filter((f) => f.endsWith("_decisions.md") && (!ref || f.startsWith(ref)));
+	if (files.length === 0) {
+		ctx.ui.notify(ref ? `rpiv-wfex: no auto-decision log for @${ref}.` : "rpiv-wfex: no auto-decision logs found.", "info");
+		return;
+	}
+	const chunks = files.sort().map((f) => `## ${f}\n${readFileSync(join(dir, f), "utf8").trim()}`);
+	ctx.ui.notify(`rpiv-wfex auto decisions:\n${chunks.join("\n\n")}`, "info");
+}
+
 async function listRunsCmd(ctx: WorkflowHostContext): Promise<void> {
 	const rt = await loadRuntime();
 	if (!rt) {
@@ -213,11 +229,12 @@ async function continueDispatch(pi: ExtensionAPI, ctx: WorkflowHostContext, ref:
 
 export function registerWfexCommands(pi: ExtensionAPI): void {
 	pi.registerCommand("wfex", {
-		description: "rpiv-wfex: resume | continue | auto | runs — autonomous workflow resume, skip-done-stage, full-auto toggle, + run lister",
+		description: "rpiv-wfex: resume | continue | auto | decisions | runs — autonomous workflow resume, skip-done-stage, full-auto toggle, + run lister",
 		handler: async (args, ctx) => {
 			const tokens = args.trim().split(/\s+/).filter(Boolean);
 			const sub = tokens[0] ?? "";
 			if (sub === "runs") return listRunsCmd(ctx);
+			if (sub === "decisions") return listDecisionsCmd(ctx, (tokens[1] ?? "").replace(/^@/, "").trim());
 			if (sub === "continue") return continueDispatch(pi, ctx, (tokens[1] ?? "").replace(/^@/, "").trim());
 			if (sub === "auto") return autoCmd(ctx, (tokens[1] ?? "").toLowerCase());
 			// "/wfex resume @ref", "/wfex resume", "/wfex @ref", "/wfex" all resume.
@@ -225,7 +242,7 @@ export function registerWfexCommands(pi: ExtensionAPI): void {
 			if (sub === "resume" || sub === "" || sub.startsWith("@")) {
 				return resumeCmd(pi, ctx, refToken.replace(/^@/, "").trim());
 			}
-			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex auto [off|safe|unattended] | /wfex runs", "warning");
+			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex auto [off|safe|unattended] | /wfex decisions [@<runId>] | /wfex runs", "warning");
 		},
 	});
 }

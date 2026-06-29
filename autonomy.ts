@@ -13,7 +13,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAutoMode, isRunActive, type AutoMode } from "./state.js";
+import { getActiveRunId, getAutoMode, isRunActive, type AutoMode } from "./state.js";
 
 export const AUTONOMY_DIRECTIVE = [
 	"## rpiv-wfex autonomy mode (active workflow run)",
@@ -52,6 +52,16 @@ const DECISION_HEURISTIC = [
 	"For each auto-decision, log ONE line with: the question, ALL options seen, the option picked,",
 	"and the one-line reason. Do not hide the alternatives you skipped.",
 ].join("\n");
+
+function decisionLogDirective(runId: string, mode: AutoMode): string {
+	return [
+		"Decision log:",
+		`- After every auto-answered question, append a markdown bullet to docs/rpiv-wfex-decisions/${runId}_decisions.md.`,
+		"- Create the file if needed with heading '# rpiv-wfex auto decisions'.",
+		`- Bullet format: '- <ISO datetime> | ${mode} | <question> | options: <all options> | picked: <choice> | reason: <one-line reason>'.`,
+		"- This log is for later human review; do not skip it.",
+	].join("\n");
+}
 
 /** #1 safe-auto: auto-answer rote + substantive decisions; genuine safety stops STILL halt. */
 export const SAFE_AUTO_DIRECTIVE = [
@@ -108,6 +118,8 @@ function directiveFor(mode: AutoMode): string {
 export function registerAutonomy(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event) => {
 		if (!isRunActive()) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${directiveFor(getAutoMode())}` };
+		const runId = getActiveRunId() ?? "unknown-run";
+		const mode = getAutoMode();
+		return { systemPrompt: `${event.systemPrompt}\n\n${directiveFor(mode)}\n\n${decisionLogDirective(runId, mode)}` };
 	});
 }

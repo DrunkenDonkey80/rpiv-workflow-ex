@@ -57,6 +57,8 @@ This package ships raw `.ts`; Pi loads it through jiti. Install it in the same P
 | `/wfex continue` | Pick the newest root failed/aborted run that can be advanced past an already-written artifact. |
 | `/wfex continue @<ref>` | For a specific run, find a fresh stage-matched artifact, ask once, write a synthetic completed row, then resume to the next stage. |
 | `/wfex runs` | List known workflow runs and their last-stage status. |
+| `/wfex decisions` | List all auto-answered questions recorded under `docs/rpiv-wfex-decisions/`. |
+| `/wfex decisions @<runId>` | List auto-answered questions for one workflow run. |
 | `/wfex auto` | Show the current auto mode. |
 | `/wfex auto off` | Default. Only the original rote-confirmation autonomy is active. |
 | `/wfex auto safe` | Auto-answer routine and substantive decisions using the Recommended/strictly-better heuristic; still halt on safety stops. |
@@ -75,7 +77,7 @@ Best default for long runs. It auto-picks:
 - the option marked **Recommended**;
 - or a more-complete option only when it is strictly additive, has no drawback, and is not deferred to a later phase.
 
-It logs each auto-decision with the question, every option it saw, the chosen option, and the reason. It still halts for genuine safety stops, especially destructive/data-loss prompts and plan/working-tree mismatch checks.
+It logs each auto-decision with the question, every option it saw, the chosen option, and the reason. Logs are appended to `docs/rpiv-wfex-decisions/<runId>_decisions.md` and can be reviewed with `/wfex decisions`. It still halts for genuine safety stops, especially destructive/data-loss prompts and plan/working-tree mismatch checks.
 
 ### `unattended`
 
