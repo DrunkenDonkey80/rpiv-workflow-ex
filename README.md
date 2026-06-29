@@ -1,109 +1,140 @@
-# rpiv-wfex — autonomy + resilience sidecar for rpiv-workflow
+# rpiv-wfex
 
-`rpiv-wfex` makes [`@juicesharp/rpiv-workflow`](https://www.npmjs.com/package/@juicesharp/rpiv-workflow)
-runs **autonomous** and **crash-resilient** — without editing rpiv-workflow or rpiv-pi. It is an
-additive Pi extension that reuses the existing engine through its public API + Pi hooks (the same
-shape as rpiv-pi's in-tree `rpiv-core/model-override.ts` sidecar). The original `/wf` stays the
-runtime; this package only adds `/wfex …` commands and four hooks.
+`rpiv-wfex` is a small Pi extension that helps `@juicesharp/rpiv-workflow` runs finish instead of stalling on routine prompts, frozen sessions, or usage-limit resets.
 
-## What it does
+It does **not** fork or patch rpiv-workflow. It adds `/wfex …` commands and lifecycle hooks beside the normal `/wf` runtime, so upstream updates stay easy to compare and adopt.
 
-1. **Autonomy** — a `before_agent_start` directive (active runs only) tells the model to
-   auto-select the Recommended / most-complete option on the mechanical confirmation gates that
-   live in rpiv-pi skill bodies (confirm slice / approve work / approve commit / proceed?). The one
-   true safety stop (the `implement` plan vs. working-tree mismatch) is **exempted** and still halts.
-2. **Resilience** — a `session_start` watchdog detects runs orphaned by the continue-policy
-   `waitForIdle` freeze (when Pi disposes the session mid-stage and the engine's await never
-   resolves) and auto-resumes them.
-3. **Resume UX** — `/wfex resume` and `/wfex runs`.
-4. **Full-auto mode** — `/wfex auto safe|unattended|off` (default `off`) branches the autonomy
-   directive. `safe` auto-answers the substantive decision prompts too (default Recommended;
-   override to a more-complete option only when strictly additive and not deferred to a later
-   stage) while genuine safety stops still halt. `unattended` auto-answers everything EXCEPT a
-   plan/working-tree mismatch (still halts). In-memory only — reset on a Pi process restart.
-5. **Usage-limit retry** — an `after_provider_response` observer catches a 429 usage limit and
-   re-sends `/wfex resume` until the window resets (parsing a "resets HH:MM (TZ)" reset time when
-   present, else polling ~every 10 min), bounded by a ~8h wall-clock cap then notify + stop.
+## Why use it?
 
-## Commands
+Long workflow runs often stop for reasons that are not real decisions:
 
-| Command | Effect |
-|---|---|
-| `/wfex resume` | Resume the newest resumable run (auto-picked). |
-| `/wfex resume @<ref>` | Resume a specific run by name or run-id. |
-| `/wfex continue [@<ref>]` | Advance PAST a stage that was interrupted but actually finished — instead of cold-re-running it. |
-| `/wfex runs` | List runs with last-stage status; resumable ones flagged. |
-| `/wfex auto` | Report the current full-auto tier. |
-| `/wfex auto off\|safe\|unattended` | Set the full-auto tier (in-memory). |
+- mechanical confirmations like "approve work", "approve commit", or "proceed";
+- a Pi session disappearing while the workflow engine is still waiting;
+- a model/provider usage limit ending the turn before the workflow can continue;
+- an interrupted stage that already wrote its artifact, so a plain resume would redo work.
 
-### resume vs. continue
+`rpiv-wfex` handles those cases with the least extra machinery possible:
 
-`/wf @id` (and `/wfex resume`) key on the trail's last row: a `completed` row routes
-onward, but a `failed`/`aborted` row makes the engine **re-enter that stage** — so if `/wf`
-died mid-stage after the skill already wrote its artifact, resume re-runs the whole stage
-("10 minutes redoing todos that were already done").
+1. injects an autonomy directive while a workflow run is active;
+2. tracks the active run and resumes orphaned runs;
+3. offers `/wfex continue` to credit a fresh artifact and advance past a completed-but-interrupted stage;
+4. retries `/wfex resume @<runId>` after usage-limit 429s until the reset window passes;
+5. lets you opt into `safe` or `unattended` auto-decision modes for overnight runs.
 
-`/wfex continue` fixes exactly that: it finds a fresh artifact matching the interrupted
-stage (newer than the failed/aborted trail row), asks you to confirm it, appends a synthetic
-`completed` row crediting that artifact, then resumes — which now advances to the **next**
-stage. It refuses mid-loop trailers and cold-reruns when no fresh stage artifact exists.
-The watchdog deliberately stays on plain `resume`: auto-advancing past a failure without a
-human check is unsafe.
+The goal: **get the project to completion without asking you to babysit obvious choices**, while still halting on the one dangerous case that should not be automated: applying a plan against a mismatched working tree.
 
 ## Install
+
+From npm, once published:
 
 ```bash
 pi install npm:rpiv-workflow-ex
 ```
 
-This package ships raw `.ts` — Pi loads it via jiti, no build step. It self-registers on load.
-Install it the same way as `@juicesharp/rpiv-workflow` (a peer) so both land in the same Pi npm
-root and the runtime import resolves. Verify with `/wfex runs` after `/reload`.
+From this repo:
 
-## Model selection (config-only, not shipped here)
-
-Pin the strongest model + `xhigh` thinking for `blueprint`/`design` + judges in
-`~/.config/rpiv-pi/models.json` (consumed by rpiv-core's existing lifecycle — no code in this
-package). Example:
-
-```json
-{
-  "stages": { "blueprint": { "model": "<best-model>", "thinking": "xhigh" }, "design": { "model": "<best-model>", "thinking": "xhigh" } },
-  "skills": { "judge": { "model": "<best-model>", "thinking": "xhigh" } }
-}
+```bash
+pi install /path/to/rpiv-workflow-ex
 ```
+
+Then restart Pi or run `/reload`, and verify:
+
+```text
+/wfex runs
+```
+
+This package ships raw `.ts`; Pi loads it through jiti. Install it in the same Pi environment as `@juicesharp/rpiv-workflow` so the peer import resolves.
+
+## Commands
+
+| Command | Effect |
+|---|---|
+| `/wfex` | Same as `/wfex resume`: resume the newest workflow run worth resuming. |
+| `/wfex resume` | Resume the newest failed/aborted/incomplete run, or newest run if none is clearly incomplete. |
+| `/wfex resume @<ref>` | Resume a specific run by id or name. |
+| `/wfex continue` | Pick the newest root failed/aborted run that can be advanced past an already-written artifact. |
+| `/wfex continue @<ref>` | For a specific run, find a fresh stage-matched artifact, ask once, write a synthetic completed row, then resume to the next stage. |
+| `/wfex runs` | List known workflow runs and their last-stage status. |
+| `/wfex auto` | Show the current auto mode. |
+| `/wfex auto off` | Default. Only the original rote-confirmation autonomy is active. |
+| `/wfex auto safe` | Auto-answer routine and substantive decisions using the Recommended/strictly-better heuristic; still halt on safety stops. |
+| `/wfex auto unattended` | Auto-answer everything except the plan-vs-working-tree mismatch. Use only when you accept the blast radius. |
+
+## Auto-mode switches
+
+### `off`
+
+Baseline mode. The extension only nudges mechanical confirmations so the workflow does not pause on rote gates. Substantive decisions still ask.
+
+### `safe`
+
+Best default for long runs. It auto-picks:
+
+- the option marked **Recommended**;
+- or a more-complete option only when it is strictly additive, has no drawback, and is not deferred to a later phase.
+
+It still halts for genuine safety stops, especially destructive/data-loss prompts and plan/working-tree mismatch checks.
+
+### `unattended`
+
+Maximum autonomy. It uses the same decision heuristic but proceeds through almost every prompt. The only hard stop left is a plan/working-tree mismatch, because applying a plan to an unexpected tree is where automation becomes expensive.
+
+Auto-mode is in-memory. It resets to `off` when the active run ends or Pi restarts.
+
+## Resume vs continue
+
+`/wfex resume` follows rpiv-workflow's normal resume semantics. If the last trail row is failed or aborted, the engine re-enters that stage.
+
+`/wfex continue` is for the common case where the stage actually finished and wrote an artifact, but the workflow died before recording the completed row. It:
+
+1. reads the run's last row;
+2. accepts only root `failed`/`aborted` stages with parseable timestamps;
+3. finds a fresh `.rpiv/artifacts/**/*.md` file matching that stage and newer than the failed row;
+4. asks before mutating the trail;
+5. appends a synthetic completed row and resumes onward.
+
+If anything is stale, unmatched, unreadable, or cancelled, it cold-reruns instead.
 
 ## Usage-limit retry
 
-On a 429, Pi's own provider auto-retry exhausts and the run would die in-chat; the sidecar's
-watchdog never sees it (it keys on session disposal, a different failure mode). The retry loop
-re-sends `/wfex resume @<runId>` until a non-429 response clears it. **Tune Pi's `retry.provider`**
-(longer/more attempts) so short blips are absorbed by Pi and the loop only handles the hard
-multi-hour wall.
+When a provider returns HTTP 429 during an active run, Pi may exhaust its own short retry loop and leave the workflow dead in chat. `rpiv-wfex` arms a bounded retry loop:
+
+- uses `retry-after` seconds when present;
+- uses HTTP-date `retry-after` when present;
+- scans `agent_end` text for strings like `resets 7:30pm (Europe/Berlin)`;
+- otherwise polls about every 10 minutes;
+- stops after about 8 hours and clears active run state.
+
+Tune Pi's own `retry.provider` for short blips; this extension is for longer usage-window resets.
+
+## Model settings
+
+If you use rpiv-pi model overrides, keep them in:
+
+```text
+~/.config/rpiv-pi/models.json
+```
+
+A practical setup is strong models with `high` thinking for planning/review stages, and `medium` for implementation/validation. `xhigh` works, but can be painfully slow and expensive for routine runs.
 
 ## Caveats
 
-- **Watchdog is best-effort.** It relies on `session_start` firing after a disposal and on an
-  idle-debounce heuristic; if the signal doesn't arrive, fall back to `/wfex resume`.
-- **Cold re-run on resume.** A frozen stage wrote no final row, so resume re-runs it cold. Verify
-  side-effect stages (esp. `commit`) are idempotent before trusting unattended overnight runs. A
-  per-run auto-resume attempt cap (3) bounds the blast radius.
-- **Auto-mode is in-memory.** Lost on a Pi process restart; set it again after `/reload`.
-- **`unattended` still halts on a plan/working-tree mismatch** — the one irreversible carve-out.
-- **Bounded retry ≠ idempotent stages.** The ~8h cap bounds blast radius but does not make a
-  non-idempotent stage (esp. `commit`) safe to cold-re-run after a limit reset.
-- **Precise reset wait depends on the "resets HH:MM" string** appearing in `agent_end` messages;
-  the API-style 429 carries no reset clock, so that surface falls back to 10-min polling.
-- **Full-auto auto-credits artifacts without confirmation.** When `auto` is `safe`/`unattended`, a
-  resume of a failed/aborted stage with an on-disk artifact is credited (advanced past) WITHOUT the
-  human check `/wfex continue` normally carries — using the same stage + freshness boundary as
-  manual continue: the artifact must match the stage and be newer than that failed/aborted row's
-  timestamp. Stale or unmatched artifacts fall back to a cold re-run. This is the opt-in blast
-  radius of full-auto; `off` keeps the cold re-run.
+- Watchdog resume is best-effort; if no lifecycle signal fires, run `/wfex resume` manually.
+- Retry does not make non-idempotent stages safe. A cold re-run of a side-effecting stage can still repeat work.
+- `unattended` is intentionally sharp. Prefer `safe` unless you really want the run to keep moving.
+- Full-auto artifact credit is intentionally conservative: stale or unmatched artifacts fall back to cold re-run.
 
 ## Upstream alignment
 
-Built against `@juicesharp/rpiv-workflow` **v1.20.0**, commit
-`faa0f9dcbe75d22e24e4a27b79ab1bfb15f38f85`. On an upstream bump, re-verify the public API used:
-`resumeWorkflowByRunId`, `listRuns`, `readLastStage`, `registerLifecycle`, and the
-`before_agent_start` / `session_start` event shapes. Pin recorded in `package.json` under `rpiv`.
+Built against `@juicesharp/rpiv-workflow` **v1.20.0**, commit `faa0f9dcbe75d22e24e4a27b79ab1bfb15f38f85`.
+
+On an upstream bump, re-check the public API used here:
+
+- `resumeWorkflowByRunId`
+- `listRuns`
+- `readLastStage`
+- `appendStage`
+- `registerLifecycle`
+- Pi events: `before_agent_start`, `session_start`, `workflow_end`, `after_provider_response`, `agent_end`
+
+The pin is also recorded in `package.json` under `rpiv`.
