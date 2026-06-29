@@ -45,7 +45,7 @@ Then restart Pi or run `/reload`, and verify:
 /wfex runs
 ```
 
-This package ships raw `.ts`; Pi loads it through jiti. Install it in the same Pi environment as `@juicesharp/rpiv-workflow` so the peer import resolves.
+This package ships raw `.ts`; Pi loads it through jiti. Install it in the same Pi environment as `@juicesharp/rpiv-workflow` — the extension self-locates the peer from the Pi agent npm store, so no `node_modules` symlink or per-machine setup is required (works for local, npm, and GitHub installs).
 
 ## Commands
 

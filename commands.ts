@@ -18,36 +18,11 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunSummary, WorkflowHostContext, WorkflowStage } from "@juicesharp/rpiv-workflow";
 import { buildCompletedRow, continueCmd, findNewestArtifactMd, parseFrontmatter, shouldOfferContinue } from "./continue.js";
+import { loadWorkflowRuntime, type WfRuntime } from "./runtime.js";
 import { clearResuming, getActiveRunId, getAutoMode, saveAutoMode, setAutoMode, type AutoMode } from "./state.js";
-
-type WfRuntime = typeof import("@juicesharp/rpiv-workflow");
-
-let runtimeMemo: Promise<WfRuntime> | undefined;
-
-const MODULE_NOT_FOUND_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"]);
-
-/** Walk the cause chain (jiti wraps import errors) for a missing-module code. */
-function isModuleNotFound(err: unknown): boolean {
-	for (let cur: unknown = err, depth = 0; cur != null && depth < 16; cur = (cur as { cause?: unknown }).cause, depth++) {
-		if (typeof cur === "object" && MODULE_NOT_FOUND_CODES.has((cur as { code?: unknown }).code as string)) return true;
-	}
-	return false;
-}
 
 function errMsg(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
-}
-
-/** Lazily import the heavy workflow runtime barrel; undefined when absent. */
-async function loadRuntime(): Promise<WfRuntime | undefined> {
-	runtimeMemo ??= import("@juicesharp/rpiv-workflow");
-	try {
-		return await runtimeMemo;
-	} catch (e) {
-		runtimeMemo = undefined; // don't memoize a rejection — next call retries
-		if (isModuleNotFound(e)) return undefined;
-		throw e;
-	}
 }
 
 /** Resume-worthy when the last stage failed/aborted or stopped mid-loop (trailing unit row). */
@@ -81,7 +56,7 @@ function pickNewestContinuable(rt: WfRuntime, cwd: string): RunSummary | undefin
 
 async function resumeCmd(pi: ExtensionAPI, ctx: WorkflowHostContext, ref: string): Promise<void> {
 	try {
-		const rt = await loadRuntime();
+		const rt = await loadWorkflowRuntime();
 		if (!rt) {
 			ctx.ui.notify("rpiv-wfex: @juicesharp/rpiv-workflow is not installed.", "error");
 			return;
@@ -164,7 +139,7 @@ function listDecisionsCmd(ctx: WorkflowHostContext, ref: string): void {
 }
 
 async function listRunsCmd(ctx: WorkflowHostContext): Promise<void> {
-	const rt = await loadRuntime();
+	const rt = await loadWorkflowRuntime();
 	if (!rt) {
 		ctx.ui.notify("rpiv-wfex: @juicesharp/rpiv-workflow is not installed.", "error");
 		return;
@@ -214,7 +189,7 @@ function autoCmd(ctx: WorkflowHostContext, mode: string): void {
  * when no ref), then delegates to the interactive `continueCmd`.
  */
 async function continueDispatch(pi: ExtensionAPI, ctx: WorkflowHostContext, ref: string): Promise<void> {
-	const rt = await loadRuntime();
+	const rt = await loadWorkflowRuntime();
 	if (!rt) {
 		ctx.ui.notify("rpiv-wfex: @juicesharp/rpiv-workflow is not installed.", "error");
 		return;

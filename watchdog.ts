@@ -22,6 +22,7 @@ import {
 	setActiveRun,
 	setAutoMode,
 } from "./state.js";
+import { importPeer, isModuleNotFound } from "./runtime.js";
 
 /**
  * Idle-debounce before declaring a run orphaned. A normal default-policy stage
@@ -46,14 +47,6 @@ function bumpEpoch(): number {
 }
 function currentEpoch(): number {
 	return ((globalThis as Record<symbol, unknown>)[EPOCH_SLOT] as number | undefined) ?? 0;
-}
-
-const MODULE_NOT_FOUND_CODES = new Set(["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"]);
-function isModuleNotFound(err: unknown): boolean {
-	for (let cur: unknown = err, depth = 0; cur != null && depth < 16; cur = (cur as { cause?: unknown }).cause, depth++) {
-		if (typeof cur === "object" && MODULE_NOT_FOUND_CODES.has((cur as { code?: unknown }).code as string)) return true;
-	}
-	return false;
 }
 
 /** Minimal shape of the session_start ctx the watchdog reads (ExtensionContext subset). */
@@ -106,9 +99,12 @@ function maybeResume(pi: ExtensionAPI, ctx: WatchdogCtx, runId: string, epoch: n
 	});
 }
 
+type WfStartup = typeof import("@juicesharp/rpiv-workflow/startup");
+
 async function registerWatchdogLifecycle(): Promise<void> {
-	const { registerLifecycle } = await import("@juicesharp/rpiv-workflow/startup");
-	registerLifecycle({
+	const startup = await importPeer<WfStartup>("@juicesharp/rpiv-workflow/startup");
+	if (!startup) return; // sibling absent — no runs to observe; degrade silently
+	startup.registerLifecycle({
 		// Run took hold (fresh /wf or a resume): mark active, release any watchdog
 		// guard so a SECOND freeze of the resumed run is detectable.
 		onWorkflowStart: (ctx) => {
