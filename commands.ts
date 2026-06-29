@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunSummary, WorkflowHostContext, WorkflowStage } from "@juicesharp/rpiv-workflow";
 import { buildCompletedRow, continueCmd, findNewestArtifactMd, parseFrontmatter, shouldOfferContinue } from "./continue.js";
-import { clearResuming, getAutoMode, saveAutoMode, setAutoMode, type AutoMode } from "./state.js";
+import { clearResuming, getAutoMode, loadPollIntervalMins, saveAutoMode, savePollIntervalMins, setAutoMode, type AutoMode } from "./state.js";
 
 type WfRuntime = typeof import("@juicesharp/rpiv-workflow");
 
@@ -162,6 +162,21 @@ async function listRunsCmd(ctx: WorkflowHostContext): Promise<void> {
 
 const AUTO_MODES = new Set<AutoMode>(["off", "safe", "unattended"]);
 
+/** `/wfex poll-interval [N]` — show or set the rate-limit retry poll interval in minutes (persisted, default 10). */
+function pollCmd(ctx: WorkflowHostContext, arg: string): void {
+	if (!arg) {
+		ctx.ui.notify(`rpiv-wfex: poll interval is ${loadPollIntervalMins()} min. Set with /wfex poll-interval <minutes>.`, "info");
+		return;
+	}
+	const n = Number(arg);
+	if (!Number.isInteger(n) || n < 1 || n > 120) {
+		ctx.ui.notify(`rpiv-wfex: poll interval must be an integer 1–120 (minutes).`, "warning");
+		return;
+	}
+	savePollIntervalMins(n);
+	ctx.ui.notify(`rpiv-wfex: poll interval set to ${n} min. Remembered across sessions.`, "info");
+}
+
 /** `/wfex auto [off|safe|unattended]` — show or set the full-auto tier (persisted). */
 function autoCmd(ctx: WorkflowHostContext, mode: string): void {
 	if (!mode) {
@@ -220,12 +235,13 @@ export function registerWfexCommands(pi: ExtensionAPI): void {
 			if (sub === "runs") return listRunsCmd(ctx);
 			if (sub === "continue") return continueDispatch(pi, ctx, (tokens[1] ?? "").replace(/^@/, "").trim());
 			if (sub === "auto") return autoCmd(ctx, (tokens[1] ?? "").toLowerCase());
+			if (sub === "poll-interval") return pollCmd(ctx, (tokens[1] ?? "").trim());
 			// "/wfex resume @ref", "/wfex resume", "/wfex @ref", "/wfex" all resume.
 			const refToken = sub.startsWith("@") ? sub : (tokens[1] ?? "");
 			if (sub === "resume" || sub === "" || sub.startsWith("@")) {
 				return resumeCmd(pi, ctx, refToken.replace(/^@/, "").trim());
 			}
-			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex auto [off|safe|unattended] | /wfex runs", "warning");
+			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex auto [off|safe|unattended] | /wfex poll-interval [<minutes>] | /wfex runs", "warning");
 		},
 	});
 }

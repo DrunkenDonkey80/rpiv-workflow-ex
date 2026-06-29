@@ -61,6 +61,8 @@ This package ships raw `.ts`; Pi loads it through jiti. Install it in the same P
 | `/wfex auto off` | Default. Only the original rote-confirmation autonomy is active. |
 | `/wfex auto safe` | Auto-answer routine and substantive decisions using the Recommended/strictly-better heuristic; still halt on safety stops. |
 | `/wfex auto unattended` | Auto-answer everything except the plan-vs-working-tree mismatch. Use only when you accept the blast radius. |
+| `/wfex poll-interval` | Show the current rate-limit retry poll interval (default 10 min). |
+| `/wfex poll-interval <minutes>` | Set the poll interval (1–120 min). Persisted across sessions. Useful to lower to 2–3 min for testing. |
 
 ## Auto-mode switches
 
@@ -104,7 +106,7 @@ When a provider returns HTTP 429 during an active run, Pi may exhaust its own sh
 - uses `retry-after` seconds when present;
 - uses HTTP-date `retry-after` when present;
 - scans `agent_end` text for strings like `resets 7:30pm (Europe/Berlin)`;
-- otherwise polls about every 10 minutes;
+- otherwise polls at the configured poll interval (default 10 min; set with `/wfex poll-interval <minutes>`);
 - stops after about 8 hours and clears active run state.
 
 Tune Pi's own `retry.provider` for short blips; this extension is for longer usage-window resets.

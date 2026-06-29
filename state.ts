@@ -51,22 +51,35 @@ function getState(): WfexState {
 
 const PREFS_FILE = join(homedir(), ".pi", "agent", "wfex-prefs.json");
 
-export function saveAutoMode(mode: AutoMode): void {
+interface Prefs { autoMode?: string; pollIntervalMins?: number; }
+
+function loadPrefs(): Prefs {
+	try { return JSON.parse(readFileSync(PREFS_FILE, "utf8")) as Prefs; } catch { return {}; }
+}
+
+function savePrefs(patch: Partial<Prefs>): void {
 	try {
 		mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
-		writeFileSync(PREFS_FILE, JSON.stringify({ autoMode: mode }), "utf8");
+		writeFileSync(PREFS_FILE, JSON.stringify({ ...loadPrefs(), ...patch }), "utf8");
 	} catch { /* non-fatal */ }
 }
 
+export function saveAutoMode(mode: AutoMode): void { savePrefs({ autoMode: mode }); }
+
 /** Load persisted auto mode from disk; returns "off" when absent or unreadable. */
 export function loadAutoMode(): AutoMode {
-	try {
-		const raw = JSON.parse(readFileSync(PREFS_FILE, "utf8")) as { autoMode?: string };
-		const m = raw?.autoMode;
-		if (m === "safe" || m === "unattended") return m;
-	} catch { /* file absent or corrupt */ }
+	const m = loadPrefs().autoMode;
+	if (m === "safe" || m === "unattended") return m as AutoMode;
 	return "off";
 }
+
+/** Poll interval for rate-limit retries in minutes; default 10. */
+export function loadPollIntervalMins(): number {
+	const n = loadPrefs().pollIntervalMins;
+	return typeof n === "number" && n >= 1 && n <= 120 ? n : 10;
+}
+
+export function savePollIntervalMins(mins: number): void { savePrefs({ pollIntervalMins: mins }); }
 
 export function setAutoMode(mode: AutoMode): void {
 	getState().autoMode = mode;

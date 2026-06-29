@@ -6,8 +6,11 @@
 import { strict as assert } from "node:assert";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { messagesText, parseResetDelayMs, registerRateLimitRetry } from "./ratelimit.js";
-import { __resetWfexState, clearActiveRun, getActiveRunId, isResuming, markResuming, setActiveRun } from "./state.js";
+import { __resetWfexState, clearActiveRun, getActiveRunId, isResuming, loadPollIntervalMins, markResuming, setActiveRun } from "./state.js";
 import { __setCswapForTest } from "./cswap.js";
+
+// --- loadPollIntervalMins default ---
+assert.equal(loadPollIntervalMins(), 10, "default poll interval is 10 min");
 
 // --- parseResetDelayMs: retry-after seconds ---
 assert.equal(parseResetDelayMs("600"), 600000, "retry-after seconds → ms");

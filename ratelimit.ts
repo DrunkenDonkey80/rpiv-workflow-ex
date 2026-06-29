@@ -18,11 +18,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { clearActiveRun, clearResuming, getActiveRunId, isResuming, markResuming } from "./state.js";
+import { clearActiveRun, clearResuming, getActiveRunId, isResuming, loadPollIntervalMins, markResuming } from "./state.js";
 import { cswapAvailable, rotateToNextAccount } from "./cswap.js";
 
-/** Poll cadence when no precise reset time is known. Also debounces against Pi's own provider auto-retry (seconds-scale), which clears us via a non-429 response before this first tick. */
-const POLL_INTERVAL_MS = 10 * 60 * 1000;
+/** Poll cadence when no precise reset time is known — reads the persisted user setting (default 10 min). Also debounces against Pi's own provider auto-retry (seconds-scale), which clears us via a non-429 response before this first tick. */
+function getPollIntervalMs(): number { return loadPollIntervalMins() * 60_000; }
 /** Total retry budget from the first 429 — one usage window + margin. ponytail: bump if your reset window is longer than ~6h. */
 const MAX_RETRY_WALL_MS = 8 * 60 * 60 * 1000;
 
@@ -187,7 +187,7 @@ function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
 	// resume for the same run. If still set after a full poll interval, let the watchdog
 	// (session_start path) own recovery rather than clobbering its marker.
 	if (isResuming(runId)) {
-		armRetry(pi, ctx, runId, POLL_INTERVAL_MS); // re-poll; don't force-clear
+		armRetry(pi, ctx, runId, getPollIntervalMs()); // re-poll; don't force-clear
 		return;
 	}
 	// cswap multi-account rotation (D1-D5): before resuming the still-limited account,
@@ -198,8 +198,8 @@ function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
 		// cswap present but every managed account is at its limit (D5): don't hammer the
 		// current account with a doomed resume — wait a poll interval and re-rotate (an
 		// account may reset in the interim), still bounded by the wall-clock cap.
-		safeNotify(ctx, `rpiv-wfex: all managed Claude accounts at limit (${rot.reason ?? "exhausted"}) — re-checking @${runId} in ${Math.round(POLL_INTERVAL_MS / 60_000)}m.`, "info");
-		armRetry(pi, ctx, runId, POLL_INTERVAL_MS);
+		safeNotify(ctx, `rpiv-wfex: all managed Claude accounts at limit (${rot.reason ?? "exhausted"}) — re-checking @${runId} in ${loadPollIntervalMins()}m.`, "info");
+		armRetry(pi, ctx, runId, getPollIntervalMs());
 		return;
 	}
 	if (rot?.switched) {
@@ -211,7 +211,7 @@ function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
 		clearResuming(runId); // queue failed → resumeCmd's finally never runs; release the guard here
 		safeNotify(ctx, `rpiv-wfex: could not queue resume for @${runId} — ${String(err)}`, "error");
 	});
-	armRetry(pi, ctx, runId, POLL_INTERVAL_MS); // keep polling; a non-429 response clears the loop
+	armRetry(pi, ctx, runId, getPollIntervalMs()); // keep polling; a non-429 response clears the loop
 }
 
 /** Replace the armed timer's wait with `delayMs` (precise reset), preserving the wall-clock deadline. */
@@ -253,7 +253,7 @@ export function registerRateLimitRetry(pi: ExtensionAPI): void {
 		// D4: cswap installed → fire the first tick immediately (delay 0) to rotate accounts
 		// rather than wait out this account's window; absent cswap → today's retry-after/poll wait.
 		const hasCswap = cswapAvailable();
-		const delay = hasCswap ? 0 : (parseResetDelayMs(firstHeader(headers, "retry-after")) ?? POLL_INTERVAL_MS);
+		const delay = hasCswap ? 0 : (parseResetDelayMs(firstHeader(headers, "retry-after")) ?? getPollIntervalMs());
 		safeNotify(
 			ctx as RetryCtx,
 			hasCswap
