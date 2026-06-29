@@ -10,6 +10,13 @@
 /** Max times the watchdog auto-fires resume for one runId before giving up. */
 export const MAX_RESUME_ATTEMPTS = 3;
 
+/**
+ * Full-auto autonomy tier: off = today's rote-confirmation-only behavior;
+ * safe = auto-answer PAUSE-list decisions (genuine safety stops still halt);
+ * unattended = auto-answer all but the plan/working-tree mismatch.
+ */
+export type AutoMode = "off" | "safe" | "unattended";
+
 interface WfexState {
 	/** Run-id of the workflow currently in flight; cleared on clean onWorkflowEnd. */
 	activeRunId?: string;
@@ -20,6 +27,8 @@ interface WfexState {
 	resumingRunId?: string;
 	/** Per-run count of watchdog auto-resume attempts; bounds loops on a stuck stage. */
 	resumeAttempts: Map<string, number>;
+	/** Full-auto tier read by the autonomy directive each turn; "off" when unset. */
+	autoMode?: AutoMode;
 }
 
 const SLOT = Symbol.for("@flex/rpiv-wfex:state");
@@ -32,6 +41,17 @@ function getState(): WfexState {
 		g[SLOT] = s;
 	}
 	return s;
+}
+
+// --- full-auto mode ---
+
+export function setAutoMode(mode: AutoMode): void {
+	getState().autoMode = mode;
+}
+
+/** Current full-auto tier; "off" when unset (today's behavior). */
+export function getAutoMode(): AutoMode {
+	return getState().autoMode ?? "off";
 }
 
 // --- active-run tracking (set by watchdog lifecycle, read by autonomy) ---
@@ -57,6 +77,7 @@ export function clearActiveRun(): void {
 	const s = getState();
 	s.activeRunId = undefined;
 	s.resumingRunId = undefined;
+	s.autoMode = undefined; // Q3: reset to "off" (getAutoMode returns "off" when undefined) so the tier never silently persists into a later run
 }
 
 // --- watchdog re-entrancy guard ---

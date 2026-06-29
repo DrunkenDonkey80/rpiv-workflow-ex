@@ -71,10 +71,19 @@ export interface FoundArtifact {
 	mtimeMs: number;
 }
 
-/** Newest `*.md` anywhere under `<cwd>/.rpiv/artifacts` (recursive), by mtime. */
-export function findNewestArtifactMd(cwd: string): FoundArtifact | undefined {
+/**
+ * Newest `*.md` anywhere under `<cwd>/.rpiv/artifacts` (recursive), by mtime.
+ * When `stageName` is provided, returns the newest candidate whose path segment
+ * equals `stageName` (case-insensitive, also tries `stageName + 's'` to cover
+ * the common artifact-dir convention plan→plans, design→designs), falling back
+ * to a frontmatter `topic`/`stage` field match; returns `undefined` when no
+ * candidate matches (caller falls through to a cold re-run). The no-stageName
+ * path is unchanged for callers that intentionally want the global newest artifact.
+ * ponytail: segment match covers the common artifact-path layout; no fuzzy score needed.
+ */
+export function findNewestArtifactMd(cwd: string, stageName?: string, newerThanMs?: number): FoundArtifact | undefined {
 	const root = join(cwd, ".rpiv", "artifacts");
-	let best: FoundArtifact | undefined;
+	const candidates: FoundArtifact[] = [];
 	const walk = (dir: string): void => {
 		let entries: Dirent[];
 		try {
@@ -87,15 +96,38 @@ export function findNewestArtifactMd(cwd: string): FoundArtifact | undefined {
 			if (e.isDirectory()) {
 				walk(p);
 			} else if (e.isFile() && e.name.endsWith(".md")) {
-				const mtimeMs = statSync(p).mtimeMs;
-				if (!best || mtimeMs > best.mtimeMs) {
-					best = { abs: p, rel: relative(cwd, p).split(sep).join("/"), mtimeMs };
+				try {
+					const mtimeMs = statSync(p).mtimeMs;
+					candidates.push({ abs: p, rel: relative(cwd, p).split(sep).join("/"), mtimeMs });
+				} catch {
+					// File disappeared / became unreadable between readdirSync and statSync — skip it.
 				}
 			}
 		}
 	};
 	walk(root);
-	return best;
+	let pool = candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	if (newerThanMs !== undefined) pool = pool.filter((c) => c.mtimeMs > newerThanMs);
+	if (!stageName) return pool[0];
+	const lower = stageName.toLowerCase();
+	// Path-segment match first — Q2 fix: match on directory-name boundary, not free substring.
+	// A stage name like "design" must not match "redesign/" or "by-design/".
+	// ponytail: pluralise once (append 's') covers plan→plans, design→designs, etc.
+	for (const c of pool) {
+		const segments = c.rel.toLowerCase().split(/[\\/]/);
+		if (segments.some((seg) => seg === lower || seg === lower + "s")) return c;
+	}
+	// Frontmatter match as secondary (topic/stage field)
+	for (const c of pool) {
+		try {
+			const fm = parseFrontmatter(readFileSync(c.abs, "utf8"));
+			const topic = String(fm.topic ?? fm.stage ?? "").toLowerCase();
+			if (topic.includes(lower)) return c;
+		} catch {
+			// unreadable → skip
+		}
+	}
+	return undefined; // no stage-matched artifact → caller falls through to cold re-run
 }
 
 /**
@@ -104,6 +136,13 @@ export function findNewestArtifactMd(cwd: string): FoundArtifact | undefined {
  * and the strict-reader requirements above. `session: null` is mandatory — the
  * resume reader's `hasValidSessionRef` refuses a row missing the key.
  */
+export function shouldOfferContinue(last: WorkflowStage | undefined): last is WorkflowStage {
+	return !!last
+		&& last.parent === undefined
+		&& (last.status === "failed" || last.status === "aborted")
+		&& Number.isFinite(Date.parse(last.ts));
+}
+
 export function buildCompletedRow(
 	last: WorkflowStage,
 	rel: string,
@@ -142,26 +181,29 @@ export async function continueCmd(pi: ExtensionAPI, ctx: WorkflowHostContext, rt
 		ctx.ui.notify(`rpiv-wfex: @${runId} has no recorded stages — use \`/wfex resume @${runId}\`.`, "warning");
 		return;
 	}
-	if (last.parent !== undefined) {
-		ctx.ui.notify(`rpiv-wfex: @${runId} stopped mid-loop — \`/wfex continue\` advances whole stages only; use \`/wfex resume @${runId}\`.`, "warning");
-		return;
-	}
 	if (last.status === "completed") {
 		ctx.ui.notify(`rpiv-wfex: @${runId} last stage '${last.stage}' already completed — advancing to the next stage.`, "info");
 		await rt.resumeWorkflowByRunId(ctx, runId, { host: pi });
 		return;
 	}
+	if (!shouldOfferContinue(last)) {
+		ctx.ui.notify(`rpiv-wfex: @${runId} last stage '${last.stage}' is not a root failed/aborted row with a parseable timestamp — cold re-running it.`, "warning");
+		await rt.resumeWorkflowByRunId(ctx, runId, { host: pi });
+		return;
+	}
 
-	const found = findNewestArtifactMd(ctx.cwd);
+	const stoppedAtMs = Date.parse(last.ts);
+	const found = findNewestArtifactMd(ctx.cwd, last.stage, stoppedAtMs);
 	if (!found) {
-		ctx.ui.notify(`rpiv-wfex: no artifact under .rpiv/artifacts to credit interrupted stage '${last.stage}' — re-run it with \`/wfex resume @${runId}\`.`, "warning");
+		ctx.ui.notify(`rpiv-wfex: no fresh artifact for interrupted stage '${last.stage}' newer than ${last.ts} — cold re-running it.`, "warning");
+		await rt.resumeWorkflowByRunId(ctx, runId, { host: pi });
 		return;
 	}
 
 	const advanceLabel = `Advance — credit ${found.rel}`;
 	const rerunLabel = `Re-run '${last.stage}' instead`;
 	const choice = await ctx.ui.select(
-		`@${runId}: stage '${last.stage}' is ${last.status}. Newest artifact: ${found.rel} (modified ${new Date(found.mtimeMs).toLocaleString()}). Mark '${last.stage}' completed with it and advance to the next stage?`,
+		`@${runId}: stage '${last.stage}' is ${last.status}. Fresh stage artifact: ${found.rel} (modified ${new Date(found.mtimeMs).toLocaleString()}). Mark '${last.stage}' completed with it and advance to the next stage?`,
 		[advanceLabel, rerunLabel, "Cancel"],
 	);
 
@@ -174,7 +216,14 @@ export async function continueCmd(pi: ExtensionAPI, ctx: WorkflowHostContext, rt
 		return;
 	}
 
-	const data = parseFrontmatter(readFileSync(found.abs, "utf8"));
+	let data: Record<string, unknown>;
+	try {
+		data = parseFrontmatter(readFileSync(found.abs, "utf8"));
+	} catch {
+		ctx.ui.notify(`rpiv-wfex: artifact ${found.rel} disappeared or became unreadable — cold re-running '${last.stage}'.`, "warning");
+		await rt.resumeWorkflowByRunId(ctx, runId, { host: pi });
+		return;
+	}
 	const row = buildCompletedRow(last, found.rel, data, runId);
 	if (!rt.appendStage(ctx.cwd, runId, row)) {
 		ctx.ui.notify(`rpiv-wfex: failed to write the completed row for '${last.stage}' — trail not modified.`, "error");

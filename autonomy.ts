@@ -13,7 +13,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isRunActive } from "./state.js";
+import { getAutoMode, isRunActive, type AutoMode } from "./state.js";
 
 export const AUTONOMY_DIRECTIVE = [
 	"## rpiv-wfex autonomy mode (active workflow run)",
@@ -41,6 +41,60 @@ export const AUTONOMY_DIRECTIVE = [
 	"  irreversible reasons."
 ].join("\n");
 
+/** Shared decision policy for safe + unattended: Recommended unless strictly-better-no-drawback, respect deferral. */
+const DECISION_HEURISTIC = [
+	"Decision heuristic:",
+	"- Default to the option marked Recommended.",
+	"- Override to a more-complete option ONLY when it is strictly additive (more features, NO",
+	"  drawback) AND its extra scope is NOT deferred to a later unit/stage. If the extra scope",
+	"  belongs to a later unit/stage, pick Recommended instead — do not pull deferred work forward.",
+	"- If no option is marked Recommended, pick the one that does the most work without deferring scope.",
+	"For each auto-decision, log ONE line: the question, the option picked, and the one-line reason.",
+].join("\n");
+
+/** #1 safe-auto: auto-answer rote + substantive decisions; genuine safety stops STILL halt. */
+export const SAFE_AUTO_DIRECTIVE = [
+	"## rpiv-wfex autonomy mode — SAFE AUTO (active workflow run)",
+	"",
+	"A multi-stage workflow run is in progress in SAFE-AUTO mode: walk it to completion without human",
+	"babysitting, auto-answering decisions too — but genuine safety stops still halt.",
+	"",
+	"Auto-answer BOTH rote confirmations (confirm slice / approve work / approve commit / proceed? /",
+	"ready to proceed / continue?) AND substantive decisions (triage apply-vs-dismiss-vs-defer;",
+	"choosing an approach, architecture, or decomposition; resolving an ambiguous requirement). Do",
+	"NOT wait.",
+	"",
+	DECISION_HEURISTIC,
+	"",
+	"EXEMPTION — genuine safety stops STILL always halt and ask (never auto-proceed), even in safe-auto:",
+	"- A plan vs. working-tree mismatch detected before implementing (the implement safety stop).",
+	'- Any step explicitly labelled a safety "Stop" / "do not proceed" for data-loss, destructive, or',
+	"  irreversible reasons.",
+].join("\n");
+
+/** #2 unattended-auto: auto-answer EVERYTHING except the plan/working-tree mismatch (D2 carve-out). */
+export const UNATTENDED_AUTO_DIRECTIVE = [
+	"## rpiv-wfex autonomy mode — UNATTENDED AUTO (active workflow run)",
+	"",
+	"A multi-stage workflow run is in progress in UNATTENDED-AUTO mode: maximum autonomy. Auto-answer",
+	"EVERYTHING — rote confirmations, substantive decisions, AND safety stops — using the heuristic",
+	"below. Do NOT wait for a human.",
+	"",
+	DECISION_HEURISTIC,
+	"",
+	"CARVE-OUT — exactly ONE stop still halts and asks (never auto-proceed), even unattended:",
+	"- A plan vs. working-tree mismatch detected before implementing (the implement safety stop):",
+	"  applying a plan against a dirty/unexpected tree is irreversible. HALT and ask on this one.",
+	'All other steps — including destructive/irreversible "Stop" steps — auto-proceed in unattended mode.',
+].join("\n");
+
+/** Select the directive text for the current full-auto tier. */
+function directiveFor(mode: AutoMode): string {
+	if (mode === "safe") return SAFE_AUTO_DIRECTIVE;
+	if (mode === "unattended") return UNATTENDED_AUTO_DIRECTIVE;
+	return AUTONOMY_DIRECTIVE; // off — today's rote-confirmation-only behavior
+}
+
 /**
  * Register the before_agent_start autonomy directive. No-op per turn unless a
  * workflow run is active (the state slot is set by the watchdog lifecycle at
@@ -53,6 +107,6 @@ export const AUTONOMY_DIRECTIVE = [
 export function registerAutonomy(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event) => {
 		if (!isRunActive()) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${AUTONOMY_DIRECTIVE}` };
+		return { systemPrompt: `${event.systemPrompt}\n\n${directiveFor(getAutoMode())}` };
 	});
 }

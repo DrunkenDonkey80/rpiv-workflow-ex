@@ -13,10 +13,11 @@
  *   /wfex runs            → list runs with last-stage status.
  */
 
+import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunSummary, WorkflowHostContext, WorkflowStage } from "@juicesharp/rpiv-workflow";
-import { continueCmd } from "./continue.js";
-import { clearResuming } from "./state.js";
+import { buildCompletedRow, continueCmd, findNewestArtifactMd, parseFrontmatter, shouldOfferContinue } from "./continue.js";
+import { clearResuming, getAutoMode, setAutoMode, type AutoMode } from "./state.js";
 
 type WfRuntime = typeof import("@juicesharp/rpiv-workflow");
 
@@ -54,6 +55,10 @@ function isResumable(last: WorkflowStage | undefined): boolean {
 	return last.status === "failed" || last.status === "aborted" || last.parent !== undefined;
 }
 
+export function shouldFullAutoCredit(last: WorkflowStage | undefined, mode: AutoMode): last is WorkflowStage {
+	return mode !== "off" && shouldOfferContinue(last);
+}
+
 /**
  * Newest clearly-incomplete run, else the newest run overall — the freeze case
  * (un-timed waitForIdle, sessions/spawn.ts:69) leaves a completed-LOOKING trail
@@ -64,6 +69,13 @@ function pickNewestResumable(rt: WfRuntime, cwd: string): RunSummary | undefined
 	const runs = [...rt.listRuns(cwd)].sort((a, b) => b.ts.localeCompare(a.ts));
 	const incomplete = runs.find((r) => isResumable(rt.readLastStage(cwd, r.runId)));
 	return incomplete ?? runs[0];
+}
+
+/** Newest root failed/aborted run that manual continue can actually advance. */
+function pickNewestContinuable(rt: WfRuntime, cwd: string): RunSummary | undefined {
+	return [...rt.listRuns(cwd)]
+		.sort((a, b) => b.ts.localeCompare(a.ts))
+		.find((r) => shouldOfferContinue(rt.readLastStage(cwd, r.runId)));
 }
 
 async function resumeCmd(pi: ExtensionAPI, ctx: WorkflowHostContext, ref: string): Promise<void> {
@@ -83,6 +95,27 @@ async function resumeCmd(pi: ExtensionAPI, ctx: WorkflowHostContext, ref: string
 			}
 			runId = pick.runId;
 			ctx.ui.notify(`rpiv-wfex: resuming newest run @${runId} (${pick.workflow}).`, "info");
+		}
+
+		// Full-auto: prefer crediting a fresh stage-matched artifact over a cold re-run.
+		// ponytail: mtime > failed-row ts is the cheap stale-prior-run guard; false negatives cold-rerun.
+		const mode = getAutoMode();
+		const last = rt.readLastStage(ctx.cwd, runId);
+		if (shouldFullAutoCredit(last, mode)) {
+			const failedAtMs = Date.parse(last.ts);
+			const found = findNewestArtifactMd(ctx.cwd, last.stage, failedAtMs);
+			if (found) {
+				try {
+					const data = parseFrontmatter(readFileSync(found.abs, "utf8")); // catch below guards unreadable artifacts
+					if (rt.appendStage(ctx.cwd, runId, buildCompletedRow(last, found.rel, data, runId))) {
+						ctx.ui.notify(`rpiv-wfex: full-auto credited '${last.stage}' with ${found.rel} (fresh stage artifact; no cold re-run).`, "warning");
+						return;
+					}
+					ctx.ui.notify(`rpiv-wfex: full-auto could not write credit row for '${last.stage}' — cold re-run.`, "warning");
+				} catch (e) {
+					ctx.ui.notify(`rpiv-wfex: full-auto could not credit '${last.stage}' (${errMsg(e)}) — cold re-run.`, "warning");
+				}
+			}
 		}
 
 		// pi (ExtensionAPI) structurally satisfies WorkflowHost; ctx satisfies
@@ -127,6 +160,28 @@ async function listRunsCmd(ctx: WorkflowHostContext): Promise<void> {
 	ctx.ui.notify(`rpiv-wfex runs (${runs.length}):\n${lines.join("\n")}`, "info");
 }
 
+const AUTO_MODES = new Set<AutoMode>(["off", "safe", "unattended"]);
+
+/** `/wfex auto [off|safe|unattended]` — show or set the full-auto tier (in-memory, D1). */
+function autoCmd(ctx: WorkflowHostContext, mode: string): void {
+	if (!mode) {
+		ctx.ui.notify(`rpiv-wfex: auto-mode is '${getAutoMode()}'. Set with /wfex auto off|safe|unattended.`, "info");
+		return;
+	}
+	if (!AUTO_MODES.has(mode as AutoMode)) {
+		ctx.ui.notify(`rpiv-wfex: unknown auto-mode '${mode}' — use off | safe | unattended.`, "warning");
+		return;
+	}
+	setAutoMode(mode as AutoMode);
+	const blurb =
+		mode === "safe"
+			? "auto-answer decisions; genuine safety stops still halt"
+			: mode === "unattended"
+				? "auto-answer everything except a plan/working-tree mismatch"
+				: "rote confirmations only (default)";
+	ctx.ui.notify(`rpiv-wfex: auto-mode set to ${mode} — ${blurb}.`, "info");
+}
+
 /**
  * `/wfex continue [@ref]` — advance PAST an interrupted-but-done stage instead
  * of cold-re-running it. Loads the runtime + resolves the run (newest resumable
@@ -140,9 +195,9 @@ async function continueDispatch(pi: ExtensionAPI, ctx: WorkflowHostContext, ref:
 	}
 	let runId = ref;
 	if (!runId) {
-		const pick = pickNewestResumable(rt, ctx.cwd);
+		const pick = pickNewestContinuable(rt, ctx.cwd);
 		if (!pick) {
-			ctx.ui.notify("rpiv-wfex: no workflow runs found to continue.", "warning");
+			ctx.ui.notify("rpiv-wfex: no root failed/aborted workflow runs found to continue.", "warning");
 			return;
 		}
 		runId = pick.runId;
@@ -156,18 +211,19 @@ async function continueDispatch(pi: ExtensionAPI, ctx: WorkflowHostContext, ref:
 
 export function registerWfexCommands(pi: ExtensionAPI): void {
 	pi.registerCommand("wfex", {
-		description: "rpiv-wfex: resume | continue | runs — autonomous workflow resume, skip-done-stage, + run lister",
+		description: "rpiv-wfex: resume | continue | auto | runs — autonomous workflow resume, skip-done-stage, full-auto toggle, + run lister",
 		handler: async (args, ctx) => {
 			const tokens = args.trim().split(/\s+/).filter(Boolean);
 			const sub = tokens[0] ?? "";
 			if (sub === "runs") return listRunsCmd(ctx);
 			if (sub === "continue") return continueDispatch(pi, ctx, (tokens[1] ?? "").replace(/^@/, "").trim());
+			if (sub === "auto") return autoCmd(ctx, (tokens[1] ?? "").toLowerCase());
 			// "/wfex resume @ref", "/wfex resume", "/wfex @ref", "/wfex" all resume.
 			const refToken = sub.startsWith("@") ? sub : (tokens[1] ?? "");
 			if (sub === "resume" || sub === "" || sub.startsWith("@")) {
 				return resumeCmd(pi, ctx, refToken.replace(/^@/, "").trim());
 			}
-			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex runs", "warning");
+			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex auto [off|safe|unattended] | /wfex runs", "warning");
 		},
 	});
 }
