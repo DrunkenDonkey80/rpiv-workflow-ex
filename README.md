@@ -73,7 +73,7 @@ Best default for long runs. It auto-picks:
 - the option marked **Recommended**;
 - or a more-complete option only when it is strictly additive, has no drawback, and is not deferred to a later phase.
 
-It still halts for genuine safety stops, especially destructive/data-loss prompts and plan/working-tree mismatch checks.
+It logs each auto-decision with the question, every option it saw, the chosen option, and the reason. It still halts for genuine safety stops, especially destructive/data-loss prompts and plan/working-tree mismatch checks.
 
 ### `unattended`
 

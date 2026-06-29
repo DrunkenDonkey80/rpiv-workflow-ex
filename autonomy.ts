@@ -49,7 +49,8 @@ const DECISION_HEURISTIC = [
 	"  drawback) AND its extra scope is NOT deferred to a later unit/stage. If the extra scope",
 	"  belongs to a later unit/stage, pick Recommended instead — do not pull deferred work forward.",
 	"- If no option is marked Recommended, pick the one that does the most work without deferring scope.",
-	"For each auto-decision, log ONE line: the question, the option picked, and the one-line reason.",
+	"For each auto-decision, log ONE line with: the question, ALL options seen, the option picked,",
+	"and the one-line reason. Do not hide the alternatives you skipped.",
 ].join("\n");
 
 /** #1 safe-auto: auto-answer rote + substantive decisions; genuine safety stops STILL halt. */
