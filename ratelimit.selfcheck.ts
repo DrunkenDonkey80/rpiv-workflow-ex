@@ -7,6 +7,7 @@ import { strict as assert } from "node:assert";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { messagesText, parseResetDelayMs, registerRateLimitRetry } from "./ratelimit.js";
 import { __resetWfexState, clearActiveRun, getActiveRunId, isResuming, markResuming, setActiveRun } from "./state.js";
+import { __setCswapForTest } from "./cswap.js";
 
 // --- parseResetDelayMs: retry-after seconds ---
 assert.equal(parseResetDelayMs("600"), 600000, "retry-after seconds → ms");
@@ -71,6 +72,7 @@ assert.equal(typeof clearActiveRun, "function", "I3 cleanup primitive is exporte
 
 		__resetWfexState();
 		setActiveRun("run1");
+		__setCswapForTest({ available: () => false, rotate: () => undefined }); // existing asserts assume the no-cswap path
 		registerRateLimitRetry(fakePi);
 
 		await handlers.after_provider_response![0]!({ status: 429, headers: { "retry-after": "600" } }, fakeCtx);
@@ -109,6 +111,55 @@ assert.equal(typeof clearActiveRun, "function", "I3 cleanup primitive is exporte
 		assert.equal(getActiveRunId(), undefined, "cap give-up clears activeRunId");
 	} finally {
 		globalThis.setTimeout = realSetTimeout;
+		__setCswapForTest(undefined);
+		__resetWfexState();
+	}
+}
+
+// --- cswap rotation paths (Phase 2 wiring) ---
+{
+	const handlers: Record<string, Function[]> = {};
+	const sent: string[] = [];
+	const fakePi = {
+		on: (name: string, fn: Function) => { (handlers[name] ??= []).push(fn); },
+		sendUserMessage: (msg: string) => { sent.push(msg); return Promise.resolve(); },
+	} as unknown as ExtensionAPI;
+	const fakeCtx = { ui: { notify: () => {} } };
+	const realSetTimeout = globalThis.setTimeout;
+	const scheduled: { fn: Function; delay: number }[] = [];
+	const RL_SLOT = Symbol.for("@flex/rpiv-wfex:ratelimit");
+	try {
+		(globalThis as unknown as { setTimeout: typeof setTimeout }).setTimeout = ((fn: Function, delay?: number) => {
+			scheduled.push({ fn, delay: Number(delay) });
+			return { unref: () => {} } as ReturnType<typeof setTimeout>;
+		}) as typeof setTimeout;
+
+		// switched: cswap present, a fresh account is found → immediate tick + resume
+		__resetWfexState();
+		(globalThis as Record<symbol, unknown>)[RL_SLOT] = undefined;
+		setActiveRun("runC");
+		__setCswapForTest({ available: () => true, rotate: () => ({ switched: true, account: "3 (a@b.c)" }) });
+		registerRateLimitRetry(fakePi);
+		await handlers.after_provider_response![0]!({ status: 429, headers: { "retry-after": "600" } }, fakeCtx);
+		assert.equal(scheduled.at(-1)!.delay, 0, "cswap present → first 429 arms an immediate (delay 0) tick");
+		scheduled.at(-1)!.fn();
+		assert.deepEqual(sent, ["/wfex resume @runC"], "switched account → resume is sent");
+
+		// exhausted: cswap present, all accounts at limit → no resume, just re-poll
+		__resetWfexState();
+		(globalThis as Record<symbol, unknown>)[RL_SLOT] = undefined; // defeat the isRetryArmed early-bail between sub-blocks
+		setActiveRun("runX");
+		sent.length = 0;
+		__setCswapForTest({ available: () => true, rotate: () => ({ switched: false, reason: "exhausted" }) });
+		await handlers.after_provider_response![0]!({ status: 429, headers: {} }, fakeCtx);
+		const beforeFire = scheduled.length;
+		scheduled.at(-1)!.fn();
+		assert.deepEqual(sent, [], "all accounts exhausted → no resume sent this tick");
+		assert.equal(scheduled.length, beforeFire + 1, "exhausted tick re-arms the poll timer");
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+		__setCswapForTest(undefined);
+		(globalThis as Record<symbol, unknown>)[RL_SLOT] = undefined;
 		__resetWfexState();
 	}
 }

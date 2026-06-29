@@ -109,6 +109,16 @@ When a provider returns HTTP 429 during an active run, Pi may exhaust its own sh
 
 Tune Pi's own `retry.provider` for short blips; this extension is for longer usage-window resets.
 
+### Multi-account rotation (cswap)
+
+If the [`cswap`](https://pypi.org/project/claude-swap/) multi-account switcher is installed, a 429 during an active run first tries to **switch to another Claude account that still has usage headroom** instead of waiting out the current account's reset window:
+
+- on each retry it runs `cswap --switch --strategy next-available --json`, which rotates to the next account and skips any currently at its 5h/7d limit;
+- on a successful switch it resumes immediately on the fresh account — the resumed turn itself is the "does this account still have quota" probe, so there is no extra check-in message;
+- when every managed account is at its limit, it does not hammer the limited account: it waits about 10 minutes and re-checks (an account may reset in the interim), still bounded by the ~8-hour wall-clock cap.
+
+This is Claude/Anthropic-specific (`cswap` manages only Claude Code logins). When `cswap` is not installed, the retry loop behaves exactly as described above on the same account (retry-after / reset-string / ~10-minute polling).
+
 ## Model settings
 
 If you use rpiv-pi model overrides, keep them in:

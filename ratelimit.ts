@@ -12,10 +12,14 @@
  * string. NOTE: after_provider_response exposes status + headers only, not the
  * body, so the subscription string is wired below via an agent_end message
  * scan (refineFromMessages); absent a reset string, it falls back to polling.
+ * Multi-account: when the `cswap` switcher is installed, each retry first rotates
+ * to another Claude account with headroom (cswap.ts) before resuming — so a
+ * usage-limited account is sidestepped rather than waited out (see fireRetry).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearActiveRun, clearResuming, getActiveRunId, isResuming, markResuming } from "./state.js";
+import { cswapAvailable, rotateToNextAccount } from "./cswap.js";
 
 /** Poll cadence when no precise reset time is known. Also debounces against Pi's own provider auto-retry (seconds-scale), which clears us via a non-429 response before this first tick. */
 const POLL_INTERVAL_MS = 10 * 60 * 1000;
@@ -186,6 +190,21 @@ function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
 		armRetry(pi, ctx, runId, POLL_INTERVAL_MS); // re-poll; don't force-clear
 		return;
 	}
+	// cswap multi-account rotation (D1-D5): before resuming the still-limited account,
+	// try switching to another Claude account that still has headroom. undefined =>
+	// cswap not installed => fall through to the original same-account resume+poll.
+	const rot = rotateToNextAccount();
+	if (rot && !rot.switched) {
+		// cswap present but every managed account is at its limit (D5): don't hammer the
+		// current account with a doomed resume — wait a poll interval and re-rotate (an
+		// account may reset in the interim), still bounded by the wall-clock cap.
+		safeNotify(ctx, `rpiv-wfex: all managed Claude accounts at limit (${rot.reason ?? "exhausted"}) — re-checking @${runId} in ${Math.round(POLL_INTERVAL_MS / 60_000)}m.`, "info");
+		armRetry(pi, ctx, runId, POLL_INTERVAL_MS);
+		return;
+	}
+	if (rot?.switched) {
+		safeNotify(ctx, `rpiv-wfex: switched to Account-${rot.account ?? "?"} via cswap — resuming @${runId}.`, "info");
+	}
 	markResuming(runId); // suppress the session_start storm the resume's own spawns trigger (same guard the watchdog uses)
 	safeNotify(ctx, `rpiv-wfex: retrying @${runId} after usage limit…`, "info");
 	void Promise.resolve(pi.sendUserMessage(`/wfex resume @${runId}`)).catch((err) => {
@@ -231,10 +250,15 @@ export function registerRateLimitRetry(pi: ExtensionAPI): void {
 		if (!runId) return; // 429 outside an active run — nothing to resume
 		if (isRetryArmed()) return; // single-loop invariant — already retrying this window
 		const headers = (event as { headers?: Record<string, string | string[] | undefined> }).headers;
-		const delay = parseResetDelayMs(firstHeader(headers, "retry-after")) ?? POLL_INTERVAL_MS;
+		// D4: cswap installed → fire the first tick immediately (delay 0) to rotate accounts
+		// rather than wait out this account's window; absent cswap → today's retry-after/poll wait.
+		const hasCswap = cswapAvailable();
+		const delay = hasCswap ? 0 : (parseResetDelayMs(firstHeader(headers, "retry-after")) ?? POLL_INTERVAL_MS);
 		safeNotify(
 			ctx as RetryCtx,
-			`rpiv-wfex: usage limit (429) on @${runId} — retrying until it resets (cap ${Math.round(MAX_RETRY_WALL_MS / 3_600_000)}h).`,
+			hasCswap
+				? `rpiv-wfex: usage limit (429) on @${runId} — trying other Claude accounts (cswap), then polling (cap ${Math.round(MAX_RETRY_WALL_MS / 3_600_000)}h).`
+				: `rpiv-wfex: usage limit (429) on @${runId} — retrying until it resets (cap ${Math.round(MAX_RETRY_WALL_MS / 3_600_000)}h).`,
 			"warning",
 		);
 		armRetry(pi, ctx as RetryCtx, runId, delay);
@@ -242,6 +266,7 @@ export function registerRateLimitRetry(pi: ExtensionAPI): void {
 
 	pi.on("agent_end", async (event, ctx) => {
 		if (!isRetryArmed()) return; // only refine an already-armed retry
+		if (cswapAvailable()) return; // D4: with cswap we poll-and-rotate every 10 min; don't defer to one account's HH:MM reset
 		const runId = getActiveRunId();
 		if (!runId) return;
 		const messages = (event as { messages?: unknown }).messages;
