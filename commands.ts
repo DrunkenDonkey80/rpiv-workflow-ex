@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunSummary, WorkflowHostContext, WorkflowStage } from "@juicesharp/rpiv-workflow";
 import { buildCompletedRow, continueCmd, findNewestArtifactMd, parseFrontmatter, shouldOfferContinue } from "./continue.js";
-import { clearResuming, getAutoMode, setAutoMode, type AutoMode } from "./state.js";
+import { clearResuming, getAutoMode, saveAutoMode, setAutoMode, type AutoMode } from "./state.js";
 
 type WfRuntime = typeof import("@juicesharp/rpiv-workflow");
 
@@ -162,7 +162,7 @@ async function listRunsCmd(ctx: WorkflowHostContext): Promise<void> {
 
 const AUTO_MODES = new Set<AutoMode>(["off", "safe", "unattended"]);
 
-/** `/wfex auto [off|safe|unattended]` — show or set the full-auto tier (in-memory, D1). */
+/** `/wfex auto [off|safe|unattended]` — show or set the full-auto tier (persisted). */
 function autoCmd(ctx: WorkflowHostContext, mode: string): void {
 	if (!mode) {
 		ctx.ui.notify(`rpiv-wfex: auto-mode is '${getAutoMode()}'. Set with /wfex auto off|safe|unattended.`, "info");
@@ -172,14 +172,16 @@ function autoCmd(ctx: WorkflowHostContext, mode: string): void {
 		ctx.ui.notify(`rpiv-wfex: unknown auto-mode '${mode}' — use off | safe | unattended.`, "warning");
 		return;
 	}
-	setAutoMode(mode as AutoMode);
+	const m = mode as AutoMode;
+	setAutoMode(m);
+	saveAutoMode(m);
 	const blurb =
-		mode === "safe"
+		m === "safe"
 			? "auto-answer decisions; genuine safety stops still halt"
-			: mode === "unattended"
+			: m === "unattended"
 				? "auto-answer everything except a plan/working-tree mismatch"
 				: "rote confirmations only (default)";
-	ctx.ui.notify(`rpiv-wfex: auto-mode set to ${mode} — ${blurb}.`, "info");
+	ctx.ui.notify(`rpiv-wfex: auto-mode set to ${m} — ${blurb}. Remembered across sessions.`, "info");
 }
 
 /**

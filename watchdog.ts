@@ -16,9 +16,11 @@ import {
 	getActiveRunId,
 	getResumeAttempts,
 	isResuming,
+	loadAutoMode,
 	markResuming,
 	MAX_RESUME_ATTEMPTS,
 	setActiveRun,
+	setAutoMode,
 } from "./state.js";
 
 /**
@@ -59,6 +61,11 @@ type WatchdogCtx = { isIdle(): boolean; ui: { notify(m: string, l?: "info" | "wa
 
 export function registerWatchdog(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
+		const saved = loadAutoMode();
+		if (saved !== "off") {
+			setAutoMode(saved);
+			ctx.ui.notify(`rpiv-wfex: auto-mode restored to '${saved}' (remembered). Use /wfex auto off to disable.`, "info");
+		}
 		const runId = getActiveRunId();
 		if (!runId || isResuming(runId)) return; // nothing active, or our own resume's sessions
 		const epoch = bumpEpoch();

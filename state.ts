@@ -7,6 +7,10 @@
  * package-private (not in rpiv-workflow's public exports).
  */
 
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 /** Max times the watchdog auto-fires resume for one runId before giving up. */
 export const MAX_RESUME_ATTEMPTS = 3;
 
@@ -45,6 +49,25 @@ function getState(): WfexState {
 
 // --- full-auto mode ---
 
+const PREFS_FILE = join(homedir(), ".pi", "agent", "wfex-prefs.json");
+
+export function saveAutoMode(mode: AutoMode): void {
+	try {
+		mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
+		writeFileSync(PREFS_FILE, JSON.stringify({ autoMode: mode }), "utf8");
+	} catch { /* non-fatal */ }
+}
+
+/** Load persisted auto mode from disk; returns "off" when absent or unreadable. */
+export function loadAutoMode(): AutoMode {
+	try {
+		const raw = JSON.parse(readFileSync(PREFS_FILE, "utf8")) as { autoMode?: string };
+		const m = raw?.autoMode;
+		if (m === "safe" || m === "unattended") return m;
+	} catch { /* file absent or corrupt */ }
+	return "off";
+}
+
 export function setAutoMode(mode: AutoMode): void {
 	getState().autoMode = mode;
 }
@@ -77,7 +100,7 @@ export function clearActiveRun(): void {
 	const s = getState();
 	s.activeRunId = undefined;
 	s.resumingRunId = undefined;
-	s.autoMode = undefined; // Q3: reset to "off" (getAutoMode returns "off" when undefined) so the tier never silently persists into a later run
+	// ponytail: auto mode is now a persistent preference; clearActiveRun no longer resets it
 }
 
 // --- watchdog re-entrancy guard ---

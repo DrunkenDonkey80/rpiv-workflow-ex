@@ -1,3 +1,4 @@
 # local Pi/rpiv runtime state, not source
 .pi/
 .rpiv/workflows/runs/
+node_modules
