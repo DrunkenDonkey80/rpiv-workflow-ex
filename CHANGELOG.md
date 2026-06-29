@@ -7,7 +7,7 @@ All notable changes to `rpiv-workflow-ex` are documented here.
 ### Added
 
 - Auto-answered workflow questions are now instructed to append reviewable bullets to `docs/rpiv-wfex-decisions/<runId>_decisions.md`.
-- `/wfex decisions [@<runId>]` lists recorded auto decisions and timestamps.
+- `/wfex decisions [@<runId>|all]` lists recorded auto decisions and timestamps; without args it uses the active workflow or latest log.
 
 ## [0.2.0] - 2026-06-29
 

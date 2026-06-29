@@ -57,8 +57,9 @@ This package ships raw `.ts`; Pi loads it through jiti. Install it in the same P
 | `/wfex continue` | Pick the newest root failed/aborted run that can be advanced past an already-written artifact. |
 | `/wfex continue @<ref>` | For a specific run, find a fresh stage-matched artifact, ask once, write a synthetic completed row, then resume to the next stage. |
 | `/wfex runs` | List known workflow runs and their last-stage status. |
-| `/wfex decisions` | List all auto-answered questions recorded under `docs/rpiv-wfex-decisions/`. |
+| `/wfex decisions` | List auto-answered questions for the active workflow, or the latest decision log if no run is active. |
 | `/wfex decisions @<runId>` | List auto-answered questions for one workflow run. |
+| `/wfex decisions all` | List every recorded auto-decision log under `docs/rpiv-wfex-decisions/`. |
 | `/wfex auto` | Show the current auto mode. |
 | `/wfex auto off` | Default. Only the original rote-confirmation autonomy is active. |
 | `/wfex auto safe` | Auto-answer routine and substantive decisions using the Recommended/strictly-better heuristic; still halt on safety stops. |

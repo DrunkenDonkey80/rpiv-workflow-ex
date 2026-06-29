@@ -13,12 +13,12 @@
  *   /wfex runs            → list runs with last-stage status.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RunSummary, WorkflowHostContext, WorkflowStage } from "@juicesharp/rpiv-workflow";
 import { buildCompletedRow, continueCmd, findNewestArtifactMd, parseFrontmatter, shouldOfferContinue } from "./continue.js";
-import { clearResuming, getAutoMode, saveAutoMode, setAutoMode, type AutoMode } from "./state.js";
+import { clearResuming, getActiveRunId, getAutoMode, saveAutoMode, setAutoMode, type AutoMode } from "./state.js";
 
 type WfRuntime = typeof import("@juicesharp/rpiv-workflow");
 
@@ -146,13 +146,21 @@ function listDecisionsCmd(ctx: WorkflowHostContext, ref: string): void {
 		ctx.ui.notify("rpiv-wfex: no auto-decision logs found.", "info");
 		return;
 	}
-	const files = readdirSync(dir).filter((f) => f.endsWith("_decisions.md") && (!ref || f.startsWith(ref)));
+	const all = readdirSync(dir).filter((f) => f.endsWith("_decisions.md"));
+	const showAll = ref === "all";
+	const target = showAll ? "" : ref || getActiveRunId();
+	const files = showAll
+		? all
+		: target
+			? all.filter((f) => f.startsWith(target))
+			: all.sort((a, b) => statSync(join(dir, b)).mtimeMs - statSync(join(dir, a)).mtimeMs).slice(0, 1);
 	if (files.length === 0) {
-		ctx.ui.notify(ref ? `rpiv-wfex: no auto-decision log for @${ref}.` : "rpiv-wfex: no auto-decision logs found.", "info");
+		ctx.ui.notify(target ? `rpiv-wfex: no auto-decision log for @${target}.` : "rpiv-wfex: no auto-decision logs found.", "info");
 		return;
 	}
+	const label = target ? `@${target}` : ref === "all" ? "all runs" : "latest run";
 	const chunks = files.sort().map((f) => `## ${f}\n${readFileSync(join(dir, f), "utf8").trim()}`);
-	ctx.ui.notify(`rpiv-wfex auto decisions:\n${chunks.join("\n\n")}`, "info");
+	ctx.ui.notify(`rpiv-wfex auto decisions (${label}):\n${chunks.join("\n\n")}`, "info");
 }
 
 async function listRunsCmd(ctx: WorkflowHostContext): Promise<void> {
@@ -242,7 +250,7 @@ export function registerWfexCommands(pi: ExtensionAPI): void {
 			if (sub === "resume" || sub === "" || sub.startsWith("@")) {
 				return resumeCmd(pi, ctx, refToken.replace(/^@/, "").trim());
 			}
-			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex auto [off|safe|unattended] | /wfex decisions [@<runId>] | /wfex runs", "warning");
+			ctx.ui.notify("rpiv-wfex: usage — /wfex resume [@<ref>] | /wfex continue [@<ref>] | /wfex auto [off|safe|unattended] | /wfex decisions [@<runId>|all] | /wfex runs", "warning");
 		},
 	});
 }
