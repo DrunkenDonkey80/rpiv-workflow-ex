@@ -8,6 +8,8 @@ All notable changes to `rpiv-workflow-ex` are documented here.
 
 - `/wfex poll-interval [<minutes>]` — show or set the rate-limit retry poll interval (1–120 min, default 10). Persisted to `~/.pi/agent/wfex-prefs.json` across sessions. Lower to 2–3 min for testing.
 - Multi-account rotation on usage limits: when the `cswap` switcher is installed, a 429 during an active run rotates to the next non-rate-limited Claude account (`cswap --switch --strategy next-available --json`) and resumes there instead of waiting out the current account's reset window. Falls back to the existing poll-and-wait loop when `cswap` is absent or every managed account is exhausted.
+- Auto-answered workflow questions are now instructed to append reviewable bullets to `docs/rpiv-wfex-decisions/<runId>_decisions.md`.
+- `/wfex decisions [@<runId>|all]` lists recorded auto decisions and timestamps; without args it uses the active workflow or latest log.
 
 ## [0.2.0] - 2026-06-29
 
