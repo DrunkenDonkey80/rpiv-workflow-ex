@@ -11,6 +11,12 @@ All notable changes to `rpiv-workflow-ex` are documented here.
 - Auto-answered workflow questions are now instructed to append reviewable bullets to `docs/rpiv-wfex-decisions/<runId>_decisions.md`.
 - `/wfex decisions [@<runId>|all]` lists recorded auto decisions and timestamps; without args it uses the active workflow or latest log.
 
+## [0.2.4] - 2026-06-29
+
+### Fixed
+
+- Usage-limit retry timers no longer crash Pi after `/reload` / session replacement. Timers can outlive the extension context they closed over; calling `pi.sendUserMessage` from that stale context throws synchronously (`This extension ctx is stale after session replacement or reload`). The retry state now remembers the latest live `ExtensionAPI`/ctx, re-arms existing timers on `session_start`, and catches both synchronous and async send failures before re-polling.
+
 ## [0.2.3] - 2026-06-29
 
 ### Fixed
@@ -54,6 +60,7 @@ All notable changes to `rpiv-workflow-ex` are documented here.
 - Self-check scripts for loading, continue behavior, and rate-limit retry behavior.
 - Operator README and repository guidance for keeping docs in sync with behavior changes.
 
+[0.2.4]: https://github.com/DrunkenDonkey80/rpiv-workflow-ex/releases/tag/v0.2.4
 [0.2.3]: https://github.com/DrunkenDonkey80/rpiv-workflow-ex/releases/tag/v0.2.3
 [0.2.2]: https://github.com/DrunkenDonkey80/rpiv-workflow-ex/releases/tag/v0.2.2
 [0.2.1]: https://github.com/DrunkenDonkey80/rpiv-workflow-ex/releases/tag/v0.2.1

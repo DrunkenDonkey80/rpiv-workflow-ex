@@ -48,7 +48,9 @@ function getPollIntervalMs(): number { return loadPollIntervalMins() * 60_000; }
 const MAX_RETRY_WALL_MS = 8 * 60 * 60 * 1000;
 
 /** Minimal ctx shape this observer reads. */
-type RetryCtx = { ui: { notify(m: string, l?: "info" | "warning" | "error"): void } };
+type RetryCtx = {
+	ui: { notify(m: string, l?: "info" | "warning" | "error"): void };
+};
 
 /** Module-private retry state in its own global slot (survives session replacement, like watchdog's EPOCH_SLOT). */
 const RETRY_SLOT = Symbol.for("@flex/rpiv-wfex:ratelimit");
@@ -57,6 +59,9 @@ interface RetryState {
 	deadlineMs?: number;
 	/** The run this retry window is armed for — scopes the non-429 clear (a stray unrelated 200 must not cancel it). */
 	runId?: string;
+	/** Latest live ExtensionAPI/ctx; timers can outlive reloads, so never trust the closure-captured ones. */
+	pi?: ExtensionAPI;
+	ctx?: RetryCtx;
 }
 function retryState(): RetryState {
 	const g = globalThis as Record<symbol, unknown>;
@@ -81,6 +86,12 @@ function clearRetry(): void {
 	lastKnownRunId = undefined;
 }
 
+function rememberRuntime(pi: ExtensionAPI, ctx?: RetryCtx): void {
+	const s = retryState();
+	s.pi = pi;
+	if (ctx) s.ctx = ctx;
+}
+
 /** Last runId seen active — fallback for arming when `activeRunId` was already cleared by a terminal-failure workflow_end. */
 let lastKnownRunId: string | undefined;
 function rememberActiveRun(): void {
@@ -89,7 +100,11 @@ function rememberActiveRun(): void {
 }
 
 /** notify on a possibly-stale ctx (timer fires up to 10 min later, after session replacement) — best-effort. */
-function safeNotify(ctx: RetryCtx, msg: string, level?: "info" | "warning" | "error"): void {
+function safeNotify(
+	ctx: RetryCtx,
+	msg: string,
+	level?: "info" | "warning" | "error",
+): void {
 	try {
 		ctx.ui.notify(msg, level);
 	} catch {
@@ -97,13 +112,19 @@ function safeNotify(ctx: RetryCtx, msg: string, level?: "info" | "warning" | "er
 	}
 }
 
-function firstHeader(headers: Record<string, string | string[] | undefined> | undefined, key: string): string | undefined {
+function firstHeader(
+	headers: Record<string, string | string[] | undefined> | undefined,
+	key: string,
+): string | undefined {
 	const v = headers?.[key];
 	return Array.isArray(v) ? v[0] : v;
 }
 
 /** Current wall-clock parts in an IANA time zone, or undefined for an invalid zone. */
-function partsInTz(tz: string, now: Date): { h: number; m: number; s: number } | undefined {
+function partsInTz(
+	tz: string,
+	now: Date,
+): { h: number; m: number; s: number } | undefined {
 	try {
 		const fmt = new Intl.DateTimeFormat("en-US", {
 			timeZone: tz,
@@ -112,7 +133,9 @@ function partsInTz(tz: string, now: Date): { h: number; m: number; s: number } |
 			minute: "2-digit",
 			second: "2-digit",
 		});
-		const p = Object.fromEntries(fmt.formatToParts(now).map((x) => [x.type, x.value]));
+		const p = Object.fromEntries(
+			fmt.formatToParts(now).map((x) => [x.type, x.value]),
+		);
 		const h = Number(p.hour) % 24; // "24:00" → 0
 		const m = Number(p.minute);
 		const s = Number(p.second);
@@ -134,7 +157,10 @@ function partsInTz(tz: string, now: Date): { h: number; m: number; s: number } |
  * polling covers them. ponytail: DST near the boundary can be off by an hour;
  * bounded by MAX_RETRY_WALL_MS, good enough.
  */
-export function parseResetDelayMs(input: string | undefined, now: Date = new Date()): number | undefined {
+export function parseResetDelayMs(
+	input: string | undefined,
+	now: Date = new Date(),
+): number | undefined {
 	if (!input) return undefined;
 	const s = input.trim();
 	if (/^\d+$/.test(s)) {
@@ -147,7 +173,9 @@ export function parseResetDelayMs(input: string | undefined, now: Date = new Dat
 		const delta = d.getTime() - now.getTime();
 		return delta > 0 ? delta : undefined;
 	}
-	const m = /resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(([^)]+)\)/i.exec(s);
+	const m = /resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(([^)]+)\)/i.exec(
+		s,
+	);
 	if (!m) return undefined;
 	let hour = Number(m[1]);
 	const min = m[2] ? Number(m[2]) : 0;
@@ -219,7 +247,12 @@ export function detectUsageLimitError(messages: unknown): boolean {
 }
 
 /** Schedule the next retry tick, honoring the wall-clock cap. */
-function armRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs: number): void {
+function armRetry(
+	pi: ExtensionAPI,
+	ctx: RetryCtx,
+	runId: string,
+	delayMs: number,
+): void {
 	const s = retryState();
 	if (s.deadlineMs === undefined) {
 		s.deadlineMs = Date.now() + MAX_RETRY_WALL_MS;
@@ -236,14 +269,20 @@ function armRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs: numbe
 		);
 		return;
 	}
-	const t = setTimeout(() => fireRetry(pi, ctx, runId), Math.min(delayMs, remaining));
+	const t = setTimeout(
+		() => fireRetry(pi, ctx, runId),
+		Math.min(delayMs, remaining),
+	);
 	t.unref?.();
 	s.timer = t;
 }
 
 /** One retry tick: re-send resume (guarded), then re-arm to poll in case it limits again. */
 function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
-	retryState().timer = undefined; // this tick consumed
+	const s = retryState();
+	s.timer = undefined; // this tick consumed
+	const livePi = s.pi ?? pi;
+	const liveCtx = s.ctx ?? ctx;
 	// Bail only if a DIFFERENT run is now active. activeRunId may be undefined
 	// because a terminal 429 failure cleared it (watchdog onWorkflowEnd) — that is
 	// exactly the case we retry through, so undefined does NOT count as "different".
@@ -256,7 +295,7 @@ function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
 	// force-clearing discards a watchdog-owned interlock and can drive a second concurrent
 	// resume for the same run.
 	if (isResuming(runId)) {
-		armRetry(pi, ctx, runId, getPollIntervalMs()); // re-poll; don't force-clear
+		armRetry(livePi, liveCtx, runId, getPollIntervalMs()); // re-poll; don't force-clear
 		return;
 	}
 	// cswap multi-account rotation: before resuming the still-limited account,
@@ -266,24 +305,35 @@ function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
 	if (rot && !rot.switched) {
 		// cswap present but every managed account is at its limit: wait a poll interval
 		// and re-rotate (an account may reset in the interim).
-		safeNotify(ctx, `rpiv-wfex: all managed Claude accounts at limit (${rot.reason ?? "exhausted"}) — re-checking @${runId} in ${loadPollIntervalMins()}m.`, "info");
-		armRetry(pi, ctx, runId, getPollIntervalMs());
+		safeNotify(liveCtx, `rpiv-wfex: all managed Claude accounts at limit (${rot.reason ?? "exhausted"}) — re-checking @${runId} in ${loadPollIntervalMins()}m.`, "info");
+		armRetry(livePi, liveCtx, runId, getPollIntervalMs());
 		return;
 	}
 	if (rot?.switched) {
-		safeNotify(ctx, `rpiv-wfex: switched to Account-${rot.account ?? "?"} via cswap — resuming @${runId}.`, "info");
+		safeNotify(liveCtx, `rpiv-wfex: switched to Account-${rot.account ?? "?"} via cswap — resuming @${runId}.`, "info");
 	}
 	markResuming(runId); // suppress the session_start storm the resume's own spawns trigger (same guard the watchdog uses)
-	safeNotify(ctx, `rpiv-wfex: retrying @${runId} after usage limit…`, "info");
-	void Promise.resolve(pi.sendUserMessage(`/wfex resume @${runId}`)).catch((err) => {
-		clearResuming(runId); // queue failed → resumeCmd's finally never runs; release the guard here
-		safeNotify(ctx, `rpiv-wfex: could not queue resume for @${runId} — ${String(err)}`, "error");
-	});
-	armRetry(pi, ctx, runId, getPollIntervalMs()); // keep polling; a non-429 response clears the loop
+	safeNotify(liveCtx, `rpiv-wfex: retrying @${runId} after usage limit…`, "info");
+	try {
+		const queued = livePi.sendUserMessage(`/wfex resume @${runId}`);
+		void Promise.resolve(queued).catch((err) => {
+			clearResuming(runId); // queue failed → resumeCmd's finally never runs; release the guard here
+			safeNotify(liveCtx, `rpiv-wfex: could not queue resume for @${runId} — ${String(err)}`, "error");
+		});
+	} catch (err) {
+		clearResuming(runId); // stale extension API or synchronous queue failure — do not crash pi
+		safeNotify(liveCtx, `rpiv-wfex: could not queue resume for @${runId} — ${String(err)}`, "error");
+	}
+	armRetry(livePi, liveCtx, runId, getPollIntervalMs()); // keep polling; a non-429 response clears the loop
 }
 
 /** Replace the armed timer's wait with `delayMs` (precise reset), preserving the wall-clock deadline. */
-function rescheduleRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs: number): void {
+function rescheduleRetry(
+	pi: ExtensionAPI,
+	ctx: RetryCtx,
+	runId: string,
+	delayMs: number,
+): void {
 	const s = retryState();
 	if (s.timer) clearTimeout(s.timer);
 	s.timer = undefined; // keep deadlineMs so the cap still measures from the first 429
@@ -296,7 +346,22 @@ function rescheduleRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs
  * unref()'d so it never holds the process.
  */
 export function registerRateLimitRetry(pi: ExtensionAPI): void {
+	rememberRuntime(pi);
+
+	pi.on("session_start", async (_event, ctx) => {
+		rememberRuntime(pi, ctx as RetryCtx);
+		const s = retryState();
+		// A retry timer can survive /reload with a closure over the old stale ExtensionAPI.
+		// Re-arm it with the current live API/ctx so the next tick cannot crash pi.
+		if (s.runId && s.deadlineMs !== undefined) {
+			if (s.timer) clearTimeout(s.timer);
+			s.timer = undefined;
+			armRetry(pi, ctx as RetryCtx, s.runId, getPollIntervalMs());
+		}
+	});
+
 	pi.on("after_provider_response", async (event, ctx) => {
+		rememberRuntime(pi, ctx as RetryCtx);
 		rememberActiveRun();
 		const status = (event as { status?: number }).status;
 		if (status !== 429) {
@@ -329,6 +394,7 @@ export function registerRateLimitRetry(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
+		rememberRuntime(pi, ctx as RetryCtx);
 		rememberActiveRun();
 		const messages = (event as { messages?: unknown }).messages;
 		// Primary arm seam: a 429 surfaces here as an error message (SDKs throw on
