@@ -1,6 +1,6 @@
 {
 	"name": "rpiv-workflow-ex",
-	"version": "0.2.0",
+	"version": "0.2.3",
 	"description": "Autonomy + resilience sidecar for @juicesharp/rpiv-workflow. Auto-answers workflow gates, auto-resumes runs orphaned by session disposal, and adds /wfex resume, continue, auto, and runs. Touches neither rpiv-workflow nor rpiv-pi.",
 	"keywords": ["pi-package", "pi-extension", "rpiv", "workflow", "autonomy", "resilience", "resume", "sidecar"],
 	"license": "MIT",
@@ -10,7 +10,7 @@
 		"url": "git+ssh://git@github.com/DrunkenDonkey80/rpiv-workflow-ex.git"
 	},
 	"type": "module",
-	"files": ["extension.ts", "state.ts", "autonomy.ts", "commands.ts", "continue.ts", "watchdog.ts", "ratelimit.ts", "cswap.ts", "README.md", "CHANGELOG.md"],
+	"files": ["extension.ts", "state.ts", "autonomy.ts", "commands.ts", "continue.ts", "watchdog.ts", "ratelimit.ts", "runtime.ts", "cswap.ts", "README.md", "CHANGELOG.md"],
 	"pi": {
 		"extensions": ["./extension.ts"]
 	},

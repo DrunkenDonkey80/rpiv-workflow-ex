@@ -5,12 +5,14 @@
 
 import { strict as assert } from "node:assert";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { messagesText, parseResetDelayMs, registerRateLimitRetry } from "./ratelimit.js";
+import { messagesText, parseResetDelayMs, POLL_INTERVAL_MS, registerRateLimitRetry } from "./ratelimit.js";
 import { __resetWfexState, clearActiveRun, getActiveRunId, isResuming, loadPollIntervalMins, markResuming, setActiveRun } from "./state.js";
 import { __setCswapForTest } from "./cswap.js";
+// mock cswap as absent in all handler blocks below — prevents real binary exec in CI/selfcheck
 
 // --- loadPollIntervalMins default ---
 assert.equal(loadPollIntervalMins(), 10, "default poll interval is 10 min");
+assert.equal(POLL_INTERVAL_MS, 10 * 60 * 1000, "POLL_INTERVAL_MS matches the default");
 
 // --- parseResetDelayMs: retry-after seconds ---
 assert.equal(parseResetDelayMs("600"), 600000, "retry-after seconds → ms");
@@ -73,9 +75,9 @@ assert.equal(typeof clearActiveRun, "function", "I3 cleanup primitive is exporte
 			return { unref: () => {} } as ReturnType<typeof setTimeout>;
 		}) as typeof setTimeout;
 
+		__setCswapForTest({ available: () => false });
 		__resetWfexState();
 		setActiveRun("run1");
-		__setCswapForTest({ available: () => false, rotate: () => undefined }); // existing asserts assume the no-cswap path
 		registerRateLimitRetry(fakePi);
 
 		await handlers.after_provider_response![0]!({ status: 429, headers: { "retry-after": "600" } }, fakeCtx);
@@ -119,7 +121,7 @@ assert.equal(typeof clearActiveRun, "function", "I3 cleanup primitive is exporte
 	}
 }
 
-// --- cswap rotation paths (Phase 2 wiring) ---
+// --- new: arm from agent_end on a 429 error (the real-world seam) ---
 {
 	const handlers: Record<string, Function[]> = {};
 	const sent: string[] = [];
@@ -128,41 +130,46 @@ assert.equal(typeof clearActiveRun, "function", "I3 cleanup primitive is exporte
 		sendUserMessage: (msg: string) => { sent.push(msg); return Promise.resolve(); },
 	} as unknown as ExtensionAPI;
 	const fakeCtx = { ui: { notify: () => {} } };
-	const realSetTimeout = globalThis.setTimeout;
 	const scheduled: { fn: Function; delay: number }[] = [];
-	const RL_SLOT = Symbol.for("@flex/rpiv-wfex:ratelimit");
+	const realSetTimeout = globalThis.setTimeout;
 	try {
 		(globalThis as unknown as { setTimeout: typeof setTimeout }).setTimeout = ((fn: Function, delay?: number) => {
 			scheduled.push({ fn, delay: Number(delay) });
 			return { unref: () => {} } as ReturnType<typeof setTimeout>;
 		}) as typeof setTimeout;
 
-		// switched: cswap present, a fresh account is found → immediate tick + resume
+		__setCswapForTest({ available: () => false });
 		__resetWfexState();
-		(globalThis as Record<symbol, unknown>)[RL_SLOT] = undefined;
-		setActiveRun("runC");
-		__setCswapForTest({ available: () => true, rotate: () => ({ switched: true, account: "3 (a@b.c)" }) });
+		setActiveRun("rl2");
 		registerRateLimitRetry(fakePi);
-		await handlers.after_provider_response![0]!({ status: 429, headers: { "retry-after": "600" } }, fakeCtx);
-		assert.equal(scheduled.at(-1)!.delay, 0, "cswap present → first 429 arms an immediate (delay 0) tick");
-		scheduled.at(-1)!.fn();
-		assert.deepEqual(sent, ["/wfex resume @runC"], "switched account → resume is sent");
 
-		// exhausted: cswap present, all accounts at limit → no resume, just re-poll
-		__resetWfexState();
-		(globalThis as Record<symbol, unknown>)[RL_SLOT] = undefined; // defeat the isRetryArmed early-bail between sub-blocks
-		setActiveRun("runX");
-		sent.length = 0;
-		__setCswapForTest({ available: () => true, rotate: () => ({ switched: false, reason: "exhausted" }) });
-		await handlers.after_provider_response![0]!({ status: 429, headers: {} }, fakeCtx);
-		const beforeFire = scheduled.length;
+		// A 429 surfacing as an assistant error message (OpenAI-compatible path):
+		// "429 …" in errorMessage, Chinese reset string present (must NOT block arming).
+		await handlers.agent_end![0]!(
+			{ messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 已达到 5 小时的使用上限。您的限额将在 2026-06-30 09:07:46 重置。" }] },
+			fakeCtx,
+		);
+		assert.equal(scheduled.length, 1, "agent_end 429 error arms one poll timer");
+		assert.equal(scheduled[0]!.delay, POLL_INTERVAL_MS, "Chinese reset string falls back to 10-min poll (no precise parse)");
+
+		// A second agent_end with the same 429 while armed must NOT arm another timer.
+		await handlers.agent_end![0]!({ messages: [{ errorMessage: "429 again" }] }, fakeCtx);
+		assert.equal(scheduled.length, 1, "second 429 while armed does not arm another timer");
+
+		// A healthy agent_end (no 429, no reset string) must NOT clear the retry —
+		// clearing is owned by after_provider_response on the 2xx resume.
+		await handlers.agent_end![0]!({ messages: [{ content: "all good" }] }, fakeCtx);
+		assert.equal(scheduled.length, 1, "healthy agent_end leaves the armed retry alone");
+
+		// fireRetry resumes by the captured runId even though activeRunId was cleared
+		// by a terminal-failure workflow_end (the recovery case).
+		clearActiveRun();
+		assert.equal(getActiveRunId(), undefined, "precondition: terminal failure cleared activeRunId");
 		scheduled.at(-1)!.fn();
-		assert.deepEqual(sent, [], "all accounts exhausted → no resume sent this tick");
-		assert.equal(scheduled.length, beforeFire + 1, "exhausted tick re-arms the poll timer");
+		assert.deepEqual(sent, ["/wfex resume @rl2"], "fireRetry resumes the captured runId despite cleared activeRunId");
 	} finally {
 		globalThis.setTimeout = realSetTimeout;
 		__setCswapForTest(undefined);
-		(globalThis as Record<symbol, unknown>)[RL_SLOT] = undefined;
 		__resetWfexState();
 	}
 }

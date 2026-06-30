@@ -45,7 +45,7 @@ Then restart Pi or run `/reload`, and verify:
 /wfex runs
 ```
 
-This package ships raw `.ts`; Pi loads it through jiti. Install it in the same Pi environment as `@juicesharp/rpiv-workflow` so the peer import resolves.
+This package ships raw `.ts`; Pi loads it through jiti. Install it in the same Pi environment as `@juicesharp/rpiv-workflow` — the extension self-locates the peer from the Pi agent npm store, so no `node_modules` symlink or per-machine setup is required (works for local, npm, and GitHub installs).
 
 ## Commands
 
@@ -106,10 +106,12 @@ If anything is stale, unmatched, unreadable, or cancelled, it cold-reruns instea
 
 When a provider returns HTTP 429 during an active run, Pi may exhaust its own short retry loop and leave the workflow dead in chat. `rpiv-wfex` arms a bounded retry loop:
 
-- uses `retry-after` seconds when present;
+- scans `agent_end` turn messages for a `429` usage-limit error (the reliable seam — the SDK throws on a non-2xx before `after_provider_response` can carry it);
+- uses `retry-after` seconds when present (via `after_provider_response` headers);
 - uses HTTP-date `retry-after` when present;
-- scans `agent_end` text for strings like `resets 7:30pm (Europe/Berlin)`;
-- otherwise polls at the configured poll interval (default 10 min; set with `/wfex poll-interval <minutes>`);
+- recognizes the English `resets HH:MM (TZ)` subscription string;
+- otherwise polls at the configured poll interval (default 10 min; set with `/wfex poll-interval <minutes>`; covers non-English reset strings e.g. Chinese `…重置`);
+- survives a terminal stage failure: a 429 that stops the workflow is still retried by resuming the captured run after reset;
 - stops after about 8 hours and clears active run state.
 
 Tune Pi's own `retry.provider` for short blips; this extension is for longer usage-window resets.
