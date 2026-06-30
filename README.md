@@ -104,10 +104,12 @@ If anything is stale, unmatched, unreadable, or cancelled, it cold-reruns instea
 
 When a provider returns HTTP 429 during an active run, Pi may exhaust its own short retry loop and leave the workflow dead in chat. `rpiv-wfex` arms a bounded retry loop:
 
-- uses `retry-after` seconds when present;
+- scans `agent_end` turn messages for a `429` usage-limit error (the reliable seam — the SDK throws on a non-2xx before `after_provider_response` can carry it);
+- uses `retry-after` seconds when present (via `after_provider_response` headers);
 - uses HTTP-date `retry-after` when present;
-- scans `agent_end` text for strings like `resets 7:30pm (Europe/Berlin)`;
-- otherwise polls about every 10 minutes;
+- recognizes the English `resets HH:MM (TZ)` subscription string;
+- otherwise polls about every 10 minutes (this covers non-English reset strings, e.g. Chinese `…重置`);
+- survives a terminal stage failure: a 429 that stops the workflow is still retried by resuming the captured run after reset;
 - stops after about 8 hours and clears active run state.
 
 Tune Pi's own `retry.provider` for short blips; this extension is for longer usage-window resets.

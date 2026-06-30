@@ -5,7 +5,7 @@
 
 import { strict as assert } from "node:assert";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { messagesText, parseResetDelayMs, registerRateLimitRetry } from "./ratelimit.js";
+import { messagesText, parseResetDelayMs, POLL_INTERVAL_MS, registerRateLimitRetry } from "./ratelimit.js";
 import { __resetWfexState, clearActiveRun, getActiveRunId, isResuming, markResuming, setActiveRun } from "./state.js";
 
 // --- parseResetDelayMs: retry-after seconds ---
@@ -107,6 +107,57 @@ assert.equal(typeof clearActiveRun, "function", "I3 cleanup primitive is exporte
 		markResuming("other");
 		scheduled.at(-1)!.fn();
 		assert.equal(getActiveRunId(), undefined, "cap give-up clears activeRunId");
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+		__resetWfexState();
+	}
+}
+
+// --- new: arm from agent_end on a 429 error (the real-world seam) ---
+{
+	const handlers: Record<string, Function[]> = {};
+	const sent: string[] = [];
+	const fakePi = {
+		on: (name: string, fn: Function) => { (handlers[name] ??= []).push(fn); },
+		sendUserMessage: (msg: string) => { sent.push(msg); return Promise.resolve(); },
+	} as unknown as ExtensionAPI;
+	const fakeCtx = { ui: { notify: () => {} } };
+	const scheduled: { fn: Function; delay: number }[] = [];
+	const realSetTimeout = globalThis.setTimeout;
+	try {
+		(globalThis as unknown as { setTimeout: typeof setTimeout }).setTimeout = ((fn: Function, delay?: number) => {
+			scheduled.push({ fn, delay: Number(delay) });
+			return { unref: () => {} } as ReturnType<typeof setTimeout>;
+		}) as typeof setTimeout;
+
+		__resetWfexState();
+		setActiveRun("rl2");
+		registerRateLimitRetry(fakePi);
+
+		// A 429 surfacing as an assistant error message (OpenAI-compatible path):
+		// "429 …" in errorMessage, Chinese reset string present (must NOT block arming).
+		await handlers.agent_end![0]!(
+			{ messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 已达到 5 小时的使用上限。您的限额将在 2026-06-30 09:07:46 重置。" }] },
+			fakeCtx,
+		);
+		assert.equal(scheduled.length, 1, "agent_end 429 error arms one poll timer");
+		assert.equal(scheduled[0]!.delay, POLL_INTERVAL_MS, "Chinese reset string falls back to 10-min poll (no precise parse)");
+
+		// A second agent_end with the same 429 while armed must NOT arm another timer.
+		await handlers.agent_end![0]!({ messages: [{ errorMessage: "429 again" }] }, fakeCtx);
+		assert.equal(scheduled.length, 1, "second 429 while armed does not arm another timer");
+
+		// A healthy agent_end (no 429, no reset string) must NOT clear the retry —
+		// clearing is owned by after_provider_response on the 2xx resume.
+		await handlers.agent_end![0]!({ messages: [{ content: "all good" }] }, fakeCtx);
+		assert.equal(scheduled.length, 1, "healthy agent_end leaves the armed retry alone");
+
+		// fireRetry resumes by the captured runId even though activeRunId was cleared
+		// by a terminal-failure workflow_end (the recovery case).
+		clearActiveRun();
+		assert.equal(getActiveRunId(), undefined, "precondition: terminal failure cleared activeRunId");
+		scheduled.at(-1)!.fn();
+		assert.deepEqual(sent, ["/wfex resume @rl2"], "fireRetry resumes the captured runId despite cleared activeRunId");
 	} finally {
 		globalThis.setTimeout = realSetTimeout;
 		__resetWfexState();

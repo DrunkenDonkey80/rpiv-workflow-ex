@@ -1,24 +1,41 @@
 /**
  * rpiv-wfex rate-limit retry — when a usage limit (HTTP 429) ends a turn, Pi's
- * provider auto-retry exhausts and the run dies in-chat; the session_start
- * watchdog never sees it (different failure mode). This observer keys on
- * after_provider_response status 429, then re-sends `/wfex resume @<runId>` on a
- * timer until a non-429 response clears it — bounded by a wall-clock cap so a
- * never-resetting limit can't loop forever. Separate file from watchdog.ts by
- * decision (D3): a rate limit and a freeze are different failure modes.
+ * provider auto-retry exhausts and the run dies. This observer arms a timer that
+ * re-sends `/wfex resume @<runId>` on a poll cadence until a non-429 response
+ * clears it — bounded by a wall-clock cap so a never-resetting limit can't loop
+ * forever.
  *
- * Reset timing: parseResetDelayMs reads the `retry-after` header (the signal
- * available at this seam) and the claude.ai subscription "resets HH:MM (TZ)"
- * string. NOTE: after_provider_response exposes status + headers only, not the
- * body, so the subscription string is wired below via an agent_end message
- * scan (refineFromMessages); absent a reset string, it falls back to polling.
+ * Detection seam: ARMED ON `agent_end`, NOT `after_provider_response`. For most
+ * providers (e.g. OpenAI-compatible like glm/zai) the SDK THROWS on a non-2xx
+ * 429 BEFORE the `onResponse` callback runs, so `after_provider_response` never
+ * carries status 429 — the 429 surfaces instead as a thrown error that fails the
+ * stage (often terminally) and ends the turn. `agent_end` is the seam that
+ * reliably fires on that error and carries the message text containing "429" /
+ * the reset string. `after_provider_response` is still wired (it fires on 2xx and
+ * clears the retry once the limit lifts) and arms as a belt-and-suspenders path
+ * for any provider whose `onResponse` does reach a 429.
+ *
+ * Terminal failure: a 429 can stop the workflow entirely ("implement failed").
+ * That fires `workflow_end`, and the watchdog's onWorkflowEnd clears
+ * `activeRunId`. This observer must NOT treat that as "run gone, stop retrying" —
+ * the rate limit IS the recoverable case. So:
+ *  - the retry is NOT cleared on `workflow_end` (it is cleared by a successful
+ *    non-429 response after a resume, or by the wall-clock cap);
+ *  - fireRetry resumes by its captured runId even when `activeRunId` was cleared,
+ *    only bailing if a DIFFERENT run is now active.
+ *
+ * Reset timing: parseResetDelayMs reads a `retry-after` header / HTTP-date / the
+ * English "resets HH:MM (TZ)" subscription string when present; otherwise it
+ * polls every POLL_INTERVAL_MS. Non-English reset strings (e.g. Chinese
+ * "…重置 <datetime>") are intentionally NOT parsed — polling covers them
+ * correctly and avoids TZ ambiguity. ponytail: poll wins over cleverness here.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearActiveRun, clearResuming, getActiveRunId, isResuming, markResuming } from "./state.js";
 
 /** Poll cadence when no precise reset time is known. Also debounces against Pi's own provider auto-retry (seconds-scale), which clears us via a non-429 response before this first tick. */
-const POLL_INTERVAL_MS = 10 * 60 * 1000;
+export const POLL_INTERVAL_MS = 10 * 60 * 1000;
 /** Total retry budget from the first 429 — one usage window + margin. ponytail: bump if your reset window is longer than ~6h. */
 const MAX_RETRY_WALL_MS = 8 * 60 * 60 * 1000;
 
@@ -53,6 +70,14 @@ function clearRetry(): void {
 	s.timer = undefined;
 	s.deadlineMs = undefined;
 	s.runId = undefined;
+	lastKnownRunId = undefined;
+}
+
+/** Last runId seen active — fallback for arming when `activeRunId` was already cleared by a terminal-failure workflow_end. */
+let lastKnownRunId: string | undefined;
+function rememberActiveRun(): void {
+	const a = getActiveRunId();
+	if (a) lastKnownRunId = a;
 }
 
 /** notify on a possibly-stale ctx (timer fires up to 10 min later, after session replacement) — best-effort. */
@@ -97,7 +122,9 @@ function partsInTz(tz: string, now: Date): { h: number; m: number; s: number } |
  *  - an HTTP-date `retry-after` value ("Mon, 29 Jun 2026 18:00:00 GMT") — Q5
  *  - the subscription "… resets 7:30pm (Europe/Berlin)" string → next occurrence
  *    of that wall-clock time in that zone (regex matches the substring anywhere).
- * ponytail: DST near the boundary can be off by an hour; bounded by MAX_RETRY_WALL_MS, good enough.
+ * Non-English reset strings (e.g. Chinese "重置") are deliberately NOT matched —
+ * polling covers them. ponytail: DST near the boundary can be off by an hour;
+ * bounded by MAX_RETRY_WALL_MS, good enough.
  */
 export function parseResetDelayMs(input: string | undefined, now: Date = new Date()): number | undefined {
 	if (!input) return undefined;
@@ -148,6 +175,44 @@ export function messagesText(messages: unknown): string {
 	return out.join("\n");
 }
 
+/**
+ * Flatten messages to text INCLUDING assistant error text (errorMessage), which is
+ * where a 429 surfaces for OpenAI-compatible providers (stopReason "error"). The
+ * base messagesText reads only `.content`, which omits the provider error string.
+ */
+function errorAndContentText(messages: unknown): string {
+	if (!Array.isArray(messages)) return "";
+	const out: string[] = [];
+	for (const msg of messages) {
+		const m = msg as { content?: unknown; errorMessage?: unknown };
+		if (typeof m.errorMessage === "string") out.push(m.errorMessage);
+		const c = m.content;
+		if (typeof c === "string") {
+			out.push(c);
+		} else if (Array.isArray(c)) {
+			for (const part of c) {
+				const t = (part as { text?: unknown }).text;
+				if (typeof t === "string") out.push(t);
+			}
+		}
+	}
+	return out.join("\n");
+}
+
+/**
+ * Does this turn's messages indicate a usage-limit failure we should retry past?
+ * True when the error/content text carries a 429 OR a parseable reset string.
+ * (The reset-string branch keeps the English "resets HH:MM (TZ)" case detected so
+ * a precise reschedule still applies; the 429 branch is the primary signal for
+ * providers like glm/zai whose error reads "429 …".)
+ */
+export function detectUsageLimitError(messages: unknown): boolean {
+	const text = errorAndContentText(messages);
+	if (/429\b/.test(text)) return true;
+	if (parseResetDelayMs(text) !== undefined) return true;
+	return false;
+}
+
 /** Schedule the next retry tick, honoring the wall-clock cap. */
 function armRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs: number): void {
 	const s = retryState();
@@ -158,7 +223,7 @@ function armRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs: numbe
 	const remaining = s.deadlineMs - Date.now();
 	if (remaining <= 0) {
 		clearRetry();
-		clearActiveRun(); // I3: same give-up semantics as watchdog; also resets autoMode to "off"
+		clearActiveRun(); // I3: same give-up semantics as watchdog
 		safeNotify(
 			ctx,
 			`rpiv-wfex: usage-limit retries for @${runId} exceeded the ${Math.round(MAX_RETRY_WALL_MS / 3_600_000)}h cap — stopping. Run \`/wfex resume @${runId}\` when the limit resets.`,
@@ -174,9 +239,13 @@ function armRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs: numbe
 /** One retry tick: re-send resume (guarded), then re-arm to poll in case it limits again. */
 function fireRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string): void {
 	retryState().timer = undefined; // this tick consumed
-	if (getActiveRunId() !== runId) {
+	// Bail only if a DIFFERENT run is now active. activeRunId may be undefined
+	// because a terminal 429 failure cleared it (watchdog onWorkflowEnd) — that is
+	// exactly the case we retry through, so undefined does NOT count as "different".
+	const active = getActiveRunId();
+	if (active !== undefined && active !== runId) {
 		clearRetry();
-		return; // run ended or changed — nothing to retry
+		return;
 	}
 	// I1: bail (re-arm to poll) when isResuming is already set by another resumer —
 	// force-clearing discards a watchdog-owned interlock and can drive a second concurrent
@@ -204,17 +273,13 @@ function rescheduleRetry(pi: ExtensionAPI, ctx: RetryCtx, runId: string, delayMs
 }
 
 /**
- * Register the 429 retry-until-reset observer. Wires after_provider_response —
- * the timer is created INSIDE the handler (never the factory body) per Pi's timer
- * discipline (extensions.md:219-223) and unref()'d so it never holds the process.
+ * Register the 429 retry-until-reset observer. The timer is created INSIDE a
+ * handler (never the factory body) per Pi's timer discipline (extensions.md) and
+ * unref()'d so it never holds the process.
  */
 export function registerRateLimitRetry(pi: ExtensionAPI): void {
-	// Q6: clear the retry slot on clean workflow_end — mirrors watchdog's lifecycle hook.
-	pi.on("workflow_end", async () => {
-		clearRetry();
-	});
-
 	pi.on("after_provider_response", async (event, ctx) => {
+		rememberActiveRun();
 		const status = (event as { status?: number }).status;
 		if (status !== 429) {
 			// Limit lifted → stop retrying, but only if this response plausibly belongs to the
@@ -227,7 +292,7 @@ export function registerRateLimitRetry(pi: ExtensionAPI): void {
 			}
 			return;
 		}
-		const runId = getActiveRunId();
+		const runId = getActiveRunId() ?? lastKnownRunId;
 		if (!runId) return; // 429 outside an active run — nothing to resume
 		if (isRetryArmed()) return; // single-loop invariant — already retrying this window
 		const headers = (event as { headers?: Record<string, string | string[] | undefined> }).headers;
@@ -241,12 +306,27 @@ export function registerRateLimitRetry(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
-		if (!isRetryArmed()) return; // only refine an already-armed retry
-		const runId = getActiveRunId();
-		if (!runId) return;
+		rememberActiveRun();
 		const messages = (event as { messages?: unknown }).messages;
+		// Primary arm seam: a 429 surfaces here as an error message (SDKs throw on
+		// non-2xx before after_provider_response can carry it). Healthy turns carry
+		// no limit signal → nothing to do (the non-429 clear is owned by
+		// after_provider_response, which fires on the 2xx resume).
+		if (!detectUsageLimitError(messages)) return;
+		const runId = getActiveRunId() ?? lastKnownRunId;
+		if (!runId) return;
+		if (!isRetryArmed()) {
+			safeNotify(
+				ctx as RetryCtx,
+				`rpiv-wfex: usage limit (429) on @${runId} — retrying every ~${Math.round(POLL_INTERVAL_MS / 60_000)} min until it lifts (cap ${Math.round(MAX_RETRY_WALL_MS / 3_600_000)}h).`,
+				"warning",
+			);
+			armRetry(pi, ctx as RetryCtx, runId, POLL_INTERVAL_MS);
+			return;
+		}
+		// Already armed (e.g. after_provider_response fired first, or a prior tick):
+		// tighten to a precise reset wait only when an English reset string is present.
 		const delay = parseResetDelayMs(messagesText(messages));
-		if (delay === undefined) return; // no subscription reset string → keep polling
-		rescheduleRetry(pi, ctx as RetryCtx, runId, delay);
+		if (delay !== undefined) rescheduleRetry(pi, ctx as RetryCtx, runId, delay);
 	});
 }
